@@ -1,31 +1,45 @@
+// Entry point. This file only starts each module and runs the main loop.
+// The actual work lives in the folders under src/ (see CLAUDE.md for the layout).
 #include <Arduino.h>
-#include <string.h>
-#include "DFRobot_GDL.h"
+#include "app/input_event.h"
+#include "app/screen_manager.h"
+#include "data/fake_feed.h"
+#include "data/market_data.h"
+#include "hal/buttons.h"
+#include "hal/buzzer.h"
+#include "hal/display.h"
+#include "net/wifi_manager.h"
 
-#define TFT_DC   25
-#define TFT_CS   5
-#define TFT_RST  26
-#define TFT_BL   4 
-
-DFRobot_ST7365P_320x480_HW_SPI screen(/*dc=*/TFT_DC, /*cs=*/TFT_CS, /*rst=*/TFT_RST, /*bl=*/TFT_BL);
-
-const char *stock_list[] = {"NVDA", "AMD", "INTC", "VRT"};
+static ScreenManager screens;
 
 void setup() {
   Serial.begin(115200);
-  screen.begin();
-  Serial.println("screen.begin() done");
-  screen.fillScreen(COLOR_RGB565_BLACK);
+  // The USB serial port disconnects on every reset. Wait up to 2 s for the PC's
+  // serial monitor to reconnect so the startup messages aren't lost.
+  while (!Serial && millis() < 2000) delay(10);
+  uint32_t now = millis();
 
-  // Outline rectangle: x, y, width, height, color
-  screen.drawRect(40, 60, 240, 150, COLOR_RGB565_WHITE);
+  inputInit();
+  displayInit();
+  buttonsInit();
+  buzzerInit();
+  marketDataInit();
+  fakeFeedInit(now);   // replaced by the Finnhub client in Phase 4
 
-  // Filled rectangle
-  screen.fillRect(80, 260, 160, 100, COLOR_RGB565_BLUE);
+  // Holding BACK while powering on erases the saved network and opens Wi-Fi setup.
+  wifiInit(buttonsBackHeld(), now);
+  screens.begin(now);
 
-  // Rounded rectangle (last-but-one arg is corner radius)
-  screen.fillRoundRect(60, 390, 200, 60, 15, COLOR_RGB565_ORANGE);
+  buzzerChime();
+  Serial.println("market tracker started");
 }
 
 void loop() {
+  uint32_t now = millis();
+  buttonsPoll(now);
+  touchPoll(now);
+  wifiUpdate(now);
+  fakeFeedUpdate(now);
+  screens.update(now);
+  delay(5);
 }
