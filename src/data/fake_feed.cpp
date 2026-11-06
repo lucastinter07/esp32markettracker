@@ -4,7 +4,7 @@
 #include "data/market_data.h"
 
 static const uint32_t UPDATE_INTERVAL_MS = 2000;
-static const int TOTAL = cfg::NUM_TICKERS + cfg::NUM_INDEXES;
+static const int TOTAL = NUM_SYMBOLS;
 
 static const float START_PRICES[TOTAL] = {131.50f, 158.20f, 22.85f, 95.40f, 228.00f,  // stocks
                                           582.10f, 501.20f};                          // SPY, QQQ
@@ -12,13 +12,9 @@ static float prevClose[TOTAL];
 static int nextSymbol = 0;
 static uint32_t lastUpdate = 0;
 
-static SymbolState& symbolAt(int i) {
-  return i < cfg::NUM_TICKERS ? stock(i) : indexEtf(i - cfg::NUM_TICKERS);
-}
-
 // Moves the price up to +/-0.3% and fills in a quote the way Finnhub would.
 static void step(int i, uint32_t nowMs) {
-  SymbolState& s = symbolAt(i);
+  SymbolState& s = symbolByIndex(i);
   float last = s.hasData ? s.quote.price : START_PRICES[i];
   float price = last * (1.0f + random(-300, 301) / 100000.0f);
 

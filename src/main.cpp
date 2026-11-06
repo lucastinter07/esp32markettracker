@@ -3,12 +3,15 @@
 #include <Arduino.h>
 #include "app/input_event.h"
 #include "app/screen_manager.h"
+#include "config.h"
 #include "data/fake_feed.h"
 #include "data/market_data.h"
 #include "hal/buttons.h"
 #include "hal/buzzer.h"
 #include "hal/display.h"
+#include "net/quote_client.h"
 #include "net/wifi_manager.h"
+#include "storage/history.h"
 
 static ScreenManager screens;
 
@@ -24,7 +27,9 @@ void setup() {
   buttonsInit();
   buzzerInit();
   marketDataInit();
-  fakeFeedInit(now);   // replaced by the Finnhub client in Phase 4
+  storageInit();
+  if (cfg::DEMO_PRICES) fakeFeedInit(now);
+  else quoteClientStart();   // background task; waits for Wi-Fi by itself
 
   // Holding BACK while powering on erases the saved network and opens Wi-Fi setup.
   wifiInit(buttonsBackHeld(), now);
@@ -39,7 +44,9 @@ void loop() {
   buttonsPoll(now);
   touchPoll(now);
   wifiUpdate(now);
-  fakeFeedUpdate(now);
+  if (cfg::DEMO_PRICES) fakeFeedUpdate(now);
+  else quoteClientApply(now);
+  storageUpdate(now);
   screens.update(now);
   delay(5);
 }

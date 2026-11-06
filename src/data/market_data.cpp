@@ -16,3 +16,12 @@ SymbolState& stock(int i) {
 SymbolState& indexEtf(int i) {
   return indexes[i];
 }
+
+bool isStale(const SymbolState& s, uint32_t nowMs, bool marketOpen) {
+  if (cfg::DEMO_PRICES || !marketOpen || !s.hasData) return false;
+  return nowMs - s.lastUpdateMs > cfg::STALE_AFTER_S * 1000;
+}
+
+SymbolState& symbolByIndex(int i) {
+  return i < cfg::NUM_TICKERS ? stocks[i] : indexes[i - cfg::NUM_TICKERS];
+}

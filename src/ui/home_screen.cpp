@@ -3,6 +3,8 @@
 #include "config.h"
 #include "data/market_data.h"
 #include "hal/display.h"
+#include "net/quote_client.h"
+#include "net/time_sync.h"
 #include "ui/chart.h"
 #include "ui/status_bar.h"
 #include "ui/theme.h"
@@ -13,10 +15,39 @@ namespace home {
 static uint32_t drawnStockVersion[cfg::NUM_TICKERS];
 static uint32_t drawnIndexVersion[cfg::NUM_INDEXES];
 static int drawnHighlight = -1;
+static const char* drawnLabel = nullptr;
+static bool drawnStale[cfg::NUM_TICKERS];
+
+// Checked once at the start of each drawFull()/update() and reused for every row.
+static bool marketOpen = false;
+
+static bool rowStale(int i) {
+  return isStale(stock(i), millis(), marketOpen);
+}
+
+// Small notice in the index bar: demo mode, a problem getting live prices, or prices
+// that have stopped updating. Returns string literals, so the same notice always has
+// the same address and update() can compare pointers to spot a change.
+static const char* feedLabel() {
+  if (cfg::DEMO_PRICES) return "DEMO PRICES";
+  const char* problem = quoteFeedProblem();
+  if (problem) return problem;
+  for (int i = 0; i < cfg::NUM_TICKERS; i++) {
+    if (rowStale(i)) return "PRICES DELAYED";
+  }
+  return nullptr;   // live prices are fine
+}
+
+static uint16_t feedLabelColor(const char* label) {
+  if (cfg::DEMO_PRICES || strcmp(label, "PRICES DELAYED") == 0) return theme::ACCENT;
+  return theme::DOWN;   // a real problem
+}
 
 static void drawRow(int i, bool highlighted) {
   DFRobot_GDL& gfx = display();
   const SymbolState& s = stock(i);
+  bool stale = rowStale(i);
+  drawnStale[i] = stale;
   int16_t y = theme::ROW_Y0 + i * theme::ROW_H;
   uint16_t bg = highlighted ? theme::HIGHLIGHT : theme::BG;
   uint16_t chg = theme::changeColor(s.quote.change);
@@ -37,6 +68,8 @@ static void drawRow(int i, bool highlighted) {
     return;
   }
 
+  // A stale price is drawn grey: it may no longer be right.
+  gfx.setTextColor(stale ? theme::DIM : theme::TEXT, bg);
   snprintf(buf, sizeof(buf), "%7.2f", s.quote.price);
   gfx.setCursor(84, ty);
   gfx.print(buf);
@@ -67,11 +100,14 @@ static void drawIndex(int i) {
   gfx.setCursor(x + 10, y + 8);
   snprintf(buf, sizeof(buf), "%s (%s)", cfg::INDEX_LABELS[i], s.symbol);
   gfx.print(buf);
-  if (cfg::DEMO_PRICES && i == cfg::NUM_INDEXES - 1) {
-    // Real market status in the top bar + made-up prices would be misleading without this.
-    gfx.setTextColor(theme::ACCENT, theme::PANEL);
-    gfx.setCursor(x + w - 10 - 11 * 6, y + 8);
-    gfx.print("DEMO PRICES");
+  if (i == cfg::NUM_INDEXES - 1) {
+    const char* label = feedLabel();
+    if (label) {
+      gfx.setTextColor(feedLabelColor(label), theme::PANEL);
+      gfx.setCursor(x + w - 10 - strlen(label) * 6, y + 8);   // right-aligned
+      gfx.print(label);
+    }
+    drawnLabel = label;
   }
 
   if (!s.hasData) return;
@@ -87,6 +123,7 @@ static void drawIndex(int i) {
 }
 
 void drawFull(int highlightRow) {
+  marketOpen = marketIsOpenNow();
   display().fillScreen(theme::BG);
   statusBarDraw(true);
   for (int i = 0; i < cfg::NUM_TICKERS; i++) {
@@ -102,10 +139,12 @@ void drawFull(int highlightRow) {
 
 void update(int highlightRow) {
   statusBarDraw(false);   // redraws itself only when its text changes
+  marketOpen = marketIsOpenNow();
 
   for (int i = 0; i < cfg::NUM_TICKERS; i++) {
     bool highlightChanged = (i == highlightRow) != (i == drawnHighlight);
-    if (highlightChanged || stock(i).version != drawnStockVersion[i]) {
+    bool staleChanged = rowStale(i) != drawnStale[i];
+    if (highlightChanged || staleChanged || stock(i).version != drawnStockVersion[i]) {
       drawRow(i, i == highlightRow);
       drawnStockVersion[i] = stock(i).version;
     }
@@ -113,7 +152,8 @@ void update(int highlightRow) {
   drawnHighlight = highlightRow;
 
   for (int i = 0; i < cfg::NUM_INDEXES; i++) {
-    if (indexEtf(i).version != drawnIndexVersion[i]) {
+    bool labelChanged = i == cfg::NUM_INDEXES - 1 && feedLabel() != drawnLabel;
+    if (labelChanged || indexEtf(i).version != drawnIndexVersion[i]) {
       drawIndex(i);
       drawnIndexVersion[i] = indexEtf(i).version;
     }

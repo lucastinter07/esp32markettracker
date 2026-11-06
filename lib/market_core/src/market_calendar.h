@@ -36,6 +36,13 @@ bool isHoliday(int year, int month, int day);
 bool isEarlyClose(int year, int month, int day);
 bool isTradingDay(int year, int month, int day);
 
+// A date as one number: days since 1970-01-01. Makes "how many days apart" a subtraction.
+int32_t dayNumber(int year, int month, int day);
+
+// Day number of the most recent session that has started: today once it's past 9:30
+// on a trading day, otherwise the previous trading day (e.g. Friday, all weekend).
+int32_t lastSessionDay(const EtTime& now);
+
 // Date helpers (also used by the tests)
 int weekdayOf(int year, int month, int day);   // 0 = Sunday ... 6 = Saturday
 void easterSunday(int year, int& month, int& day);

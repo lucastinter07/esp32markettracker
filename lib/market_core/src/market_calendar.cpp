@@ -131,6 +131,19 @@ bool isTradingDay(int year, int month, int day) {
   return isTradingDays(daysFromCivil(year, month, day));
 }
 
+int32_t dayNumber(int year, int month, int day) {
+  return daysFromCivil(year, month, day);
+}
+
+int32_t lastSessionDay(const EtTime& now) {
+  int32_t today = daysFromCivil(now.year, now.month, now.day);
+  int minuteOfDay = now.hour * 60 + now.minute;
+  if (isTradingDays(today) && minuteOfDay >= OPEN_MIN) return today;
+  int32_t day = today - 1;
+  while (!isTradingDays(day) && day > today - 10) day--;
+  return day;
+}
+
 MarketStatus marketStatus(const EtTime& now) {
   MarketStatus s{};
   int32_t today = daysFromCivil(now.year, now.month, now.day);

@@ -26,3 +26,8 @@ bool timeNowET(EtTime& out) {
   out.minute = t.tm_min;
   return true;
 }
+
+bool marketIsOpenNow() {
+  EtTime now;
+  return timeNowET(now) && marketStatus(now).phase == MarketPhase::Open;
+}

@@ -92,8 +92,18 @@ void test_status_holiday_and_early_close() {
   TEST_ASSERT_TRUE(afterEarly.phase == MarketPhase::AfterHours);
 }
 
+void test_last_session_day() {
+  int32_t wed = dayNumber(2026, 11, 4);
+  TEST_ASSERT_EQUAL(wed, lastSessionDay({2026, 11, 4, 10, 0}));       // during the session
+  TEST_ASSERT_EQUAL(wed - 1, lastSessionDay({2026, 11, 4, 8, 0}));    // before the open: Tuesday
+  TEST_ASSERT_EQUAL(dayNumber(2026, 11, 6), lastSessionDay({2026, 11, 7, 12, 0}));   // Saturday -> Friday
+  // Friday after Thanksgiving, before the open: skips the Thursday holiday -> Wednesday
+  TEST_ASSERT_EQUAL(dayNumber(2026, 11, 25), lastSessionDay({2026, 11, 27, 8, 0}));
+}
+
 int main() {
   UNITY_BEGIN();
+  RUN_TEST(test_last_session_day);
   RUN_TEST(test_weekday_and_easter);
   RUN_TEST(test_holidays_2025_2026_2027);
   RUN_TEST(test_early_closes);

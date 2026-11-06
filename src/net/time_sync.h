@@ -5,3 +5,4 @@
 
 void timeSyncStart();             // call once Wi-Fi is connected
 bool timeNowET(EtTime& out);      // current US Eastern time; false until synced
+bool marketIsOpenNow();           // regular session right now; false until synced
