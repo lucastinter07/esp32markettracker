@@ -1,24 +1,33 @@
 #include "ui/detail_screen.h"
 #include <Arduino.h>
+#include <string.h>
 #include "config.h"
 #include "data/market_data.h"
 #include "hal/display.h"
 #include "net/time_sync.h"
-#include "ui/chart.h"
+#include "ui/price_chart.h"
 #include "ui/theme.h"
 
 namespace detail {
 
+// Layout, top to bottom (480 x 320)
 static const int16_t HEADER_H = 40;
 static const int16_t BACK_W = 120;
-static const int16_t NAME_Y = 46;      // company name line, just below the header
-static const int16_t PRICE_Y = 66;
-static const int16_t CHART_X = 10, CHART_Y = 118, CHART_W = 270, CHART_H = 184;
-// Stats: two columns of four, 90 px wide and 48 px apart
-static const int16_t STATS_X[2] = {296, 386};
-static const int16_t STATS_Y = 118, STATS_ROW_H = 48;
-static const int16_t BAR_Y = cfg::SCREEN_H - 6, BAR_H = 6;
+static const int16_t NAME_Y = 46;       // company name line, just below the header
+static const int16_t PRICE_Y = 66;      // big price + change
+static const int16_t BODY_Y = 110;      // page content starts here...
+static const int16_t BODY_H = 174;      // ...and ends at 283
+static const int16_t BAR_Y = 284, BAR_H = 4;   // auto-mode countdown, just above the tabs
+static const int16_t TAB_Y = 288, TAB_H = 32;
+static const int TAB_COUNT = 2;
+static const char* const TAB_NAMES[TAB_COUNT] = {"CHART", "STATS"};
 
+// Stats page: two columns of four rows, labels left, values right-aligned
+static const int16_t STAT_COL_X[2] = {10, 250};
+static const int16_t STAT_COL_W = 220;
+static const int16_t STAT_Y = 118, STAT_ROW_H = 34;
+
+static Page page = Page::Chart;
 static uint32_t drawnVersion = 0;
 static int drawnStaleMin = -1;   // minutes since the last quote when stale, -1 when fresh
 static int16_t drawnBarW = -1;
@@ -56,6 +65,20 @@ static void drawHeader(int ticker, bool pinned) {
   drawBadge(pinned);
 }
 
+static void drawTabs() {
+  DFRobot_GDL& gfx = display();
+  int16_t w = cfg::SCREEN_W / TAB_COUNT;
+  gfx.setTextSize(2);
+  for (int i = 0; i < TAB_COUNT; i++) {
+    bool selected = i == (int)page;
+    uint16_t bg = selected ? theme::HIGHLIGHT : theme::PANEL;
+    gfx.fillRect(i * w, TAB_Y, w - 1, TAB_H, bg);   // the 1 px gap separates the tabs
+    gfx.setTextColor(selected ? theme::TEXT : theme::LABEL, bg);
+    gfx.setCursor(i * w + (w - (int16_t)strlen(TAB_NAMES[i]) * 12) / 2, TAB_Y + 9);
+    gfx.print(TAB_NAMES[i]);
+  }
+}
+
 // Prices in at most 7 characters, so a value never runs into the next column.
 static void formatPrice(char* buf, size_t size, float v) {
   if (v >= 10000) snprintf(buf, size, "%.0f", v);
@@ -70,20 +93,20 @@ static void formatMarketCap(char* buf, size_t size, double dollars) {
   else snprintf(buf, size, "%.0fM", dollars / 1e6);
 }
 
-// One stat: small amber label, larger value under it. "--" when there's no value yet.
+// One stats row: amber label on the left, value right-aligned at the column's edge.
+// "%7s" pads the value on the left, so a shorter new value covers a longer old one.
 static void drawStat(int col, int row, const char* label, const char* value) {
   DFRobot_GDL& gfx = display();
-  int16_t x = STATS_X[col];
-  int16_t y = STATS_Y + row * STATS_ROW_H;
+  int16_t x = STAT_COL_X[col];
+  int16_t y = STAT_Y + row * STAT_ROW_H;
   char padded[12];
-  snprintf(padded, sizeof(padded), "%-7s", value[0] ? value : "--");   // spaces cover old text
-  gfx.setTextSize(1);
+  snprintf(padded, sizeof(padded), "%7s", value[0] ? value : "--");
+  gfx.setTextSize(2);
   gfx.setTextColor(theme::STAT_LABEL, theme::BG);
   gfx.setCursor(x, y);
   gfx.print(label);
-  gfx.setTextSize(2);
   gfx.setTextColor(theme::TEXT, theme::BG);
-  gfx.setCursor(x, y + 11);
+  gfx.setCursor(x + STAT_COL_W - 7 * 12, y);
   gfx.print(padded);
 }
 
@@ -93,11 +116,41 @@ static void drawPriceStat(int col, int row, const char* label, float v) {
   drawStat(col, row, label, buf);
 }
 
-static void drawData(int ticker) {
-  DFRobot_GDL& gfx = display();
-  const SymbolState& s = stock(ticker);
+static void drawStatsPage(const SymbolState& s) {
   const Quote& q = s.quote;
   const Fundamentals& f = s.fundamentals;
+  char buf[16];
+
+  // Left column: today. Right column: company stats (fetched weekly, kept current).
+  drawPriceStat(0, 0, "OPEN", q.open);
+  drawPriceStat(0, 1, "DAY HIGH", q.high);
+  drawPriceStat(0, 2, "DAY LOW", q.low);
+  drawPriceStat(0, 3, "PREV CLOSE", q.prevClose);
+
+  drawPriceStat(1, 0, "52W HIGH", f.valid ? f.high52 : 0);
+  drawPriceStat(1, 1, "52W LOW", f.valid ? f.low52 : 0);
+  buf[0] = '\0';
+  float pe = s.peRatio();
+  if (pe > 0) snprintf(buf, sizeof(buf), "%.1f", pe);
+  drawStat(1, 2, "P/E", buf);
+  buf[0] = '\0';
+  double cap = s.marketCap();
+  if (cap > 0) formatMarketCap(buf, sizeof(buf), cap);
+  drawStat(1, 3, "MKT CAP", buf);
+}
+
+static void drawBody(const SymbolState& s) {
+  if (page == Page::Chart) {
+    drawDayChart(s, ChartBox{4, BODY_Y, cfg::SCREEN_W - 8, BODY_H});
+  } else {
+    drawStatsPage(s);
+  }
+}
+
+// The shared top: company name, price, change and the stale note.
+static void drawTop(const SymbolState& s) {
+  DFRobot_GDL& gfx = display();
+  const Quote& q = s.quote;
   uint16_t chg = theme::changeColor(q.change);
   int staleMin = staleMinutes(s);
   char buf[48];
@@ -141,40 +194,34 @@ static void drawData(int ticker) {
     gfx.print(buf);
   }
   drawnStaleMin = staleMin;
-
-  drawLineChart(CHART_X, CHART_Y, CHART_W, CHART_H, s.intraday, chg, theme::BG, true, q.prevClose);
-
-  // Left column: today. Right column: company stats (fetched weekly, kept current).
-  drawPriceStat(0, 0, "OPEN", q.open);
-  drawPriceStat(0, 1, "DAY HIGH", q.high);
-  drawPriceStat(0, 2, "DAY LOW", q.low);
-  drawPriceStat(0, 3, "PREV CLOSE", q.prevClose);
-
-  drawPriceStat(1, 0, "52W HIGH", f.valid ? f.high52 : 0);
-  drawPriceStat(1, 1, "52W LOW", f.valid ? f.low52 : 0);
-  buf[0] = '\0';
-  float pe = s.peRatio();
-  if (pe > 0) snprintf(buf, sizeof(buf), "%.1f", pe);
-  drawStat(1, 2, "P/E", buf);
-  buf[0] = '\0';
-  double cap = s.marketCap();
-  if (cap > 0) formatMarketCap(buf, sizeof(buf), cap);
-  drawStat(1, 3, "MKT CAP", buf);
 }
 
-void drawFull(int ticker, bool pinned) {
+void drawFull(int ticker, bool pinned, Page newPage) {
+  page = newPage;
   display().fillScreen(theme::BG);
   drawHeader(ticker, pinned);
-  drawData(ticker);
+  drawTop(stock(ticker));
+  drawBody(stock(ticker));
+  drawTabs();
   drawnVersion = stock(ticker).version;
   drawnBarW = -1;
 }
 
+void setPage(int ticker, Page newPage) {
+  if (newPage == page) return;
+  page = newPage;
+  display().fillRect(0, BODY_Y, cfg::SCREEN_W, BODY_H, theme::BG);
+  drawBody(stock(ticker));
+  drawTabs();
+}
+
 void update(int ticker) {
-  bool staleChanged = staleMinutes(stock(ticker)) != drawnStaleMin;
-  if (stock(ticker).version == drawnVersion && !staleChanged) return;
-  drawData(ticker);
-  drawnVersion = stock(ticker).version;
+  const SymbolState& s = stock(ticker);
+  bool staleChanged = staleMinutes(s) != drawnStaleMin;
+  if (s.version == drawnVersion && !staleChanged) return;
+  drawTop(s);
+  if (s.version != drawnVersion) drawBody(s);   // a stale tick alone doesn't change the body
+  drawnVersion = s.version;
 }
 
 void drawCountdown(float remaining) {
@@ -198,6 +245,12 @@ void setPinned(bool pinned) {
 bool isBackTap(int16_t x, int16_t y) {
   // Generous target: a fingertip is ~40 px wide, so accept taps a bit beyond the box.
   return x < BACK_W + 40 && y < HEADER_H + 20;
+}
+
+int tabAt(int16_t x, int16_t y) {
+  if (y < TAB_Y - 8) return -1;   // a little extra room above the tabs for a fingertip
+  int tab = x / (cfg::SCREEN_W / TAB_COUNT);
+  return tab < TAB_COUNT ? tab : -1;
 }
 
 }  // namespace detail

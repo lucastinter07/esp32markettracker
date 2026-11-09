@@ -36,7 +36,7 @@ void ScreenManager::showDetail(int ticker, bool pinned, uint32_t nowMs) {
   mode_ = pinned ? Mode::PinnedDetail : Mode::AutoDetail;
   modeStartMs_ = nowMs;
   ticker_ = ticker;
-  detail::drawFull(ticker, pinned);
+  detail::drawFull(ticker, pinned, page_);
   Serial.printf("screen: detail %d (%s)\n", ticker, pinned ? "pinned" : "auto");
 }
 
@@ -61,6 +61,7 @@ void ScreenManager::update(uint32_t nowMs) {
   switch (mode_) {
     case Mode::Home:
       if (elapsed >= cfg::HOME_DURATION_MS) {
+        page_ = detail::Page::Chart;   // the auto cycle always starts on the chart
         showDetail(nextAutoTicker_, false, nowMs);
         nextAutoTicker_ = wrap(nextAutoTicker_ + 1);
       } else {
@@ -72,6 +73,11 @@ void ScreenManager::update(uint32_t nowMs) {
       if (elapsed >= cfg::DETAIL_DURATION_MS) {
         showHome(nowMs);
       } else {
+        // Halfway through, turn to the stats page.
+        if (page_ == detail::Page::Chart && elapsed >= cfg::DETAIL_DURATION_MS / 2) {
+          page_ = detail::Page::Stats;
+          detail::setPage(ticker_, page_);
+        }
         detail::update(ticker_);
         detail::drawCountdown(1.0f - (float)elapsed / cfg::DETAIL_DURATION_MS);
       }
@@ -110,7 +116,10 @@ void ScreenManager::handleInputAction(const InputEvent& ev, uint32_t nowMs) {
     switch (ev.type) {
       case InputType::Prev:   highlight_ = wrap(highlight_ - 1); break;
       case InputType::Next:   highlight_ = wrap(highlight_ + 1); break;
-      case InputType::Select: showDetail(highlight_, true, nowMs); break;
+      case InputType::Select:
+        page_ = detail::Page::Chart;
+        showDetail(highlight_, true, nowMs);
+        break;
       case InputType::Tap: {
         int row = home::rowAt(ev.x, ev.y);
         if (cfg::TOUCH_DEBUG) {
@@ -119,6 +128,7 @@ void ScreenManager::handleInputAction(const InputEvent& ev, uint32_t nowMs) {
         }
         if (row >= 0) {
           highlight_ = row;
+          page_ = detail::Page::Chart;
           showDetail(row, true, nowMs);
         }
         break;
@@ -130,18 +140,29 @@ void ScreenManager::handleInputAction(const InputEvent& ev, uint32_t nowMs) {
 
   // On a Detail screen (auto or pinned)
   bool backTap = ev.type == InputType::Tap && detail::isBackTap(ev.x, ev.y);
+  int tab = ev.type == InputType::Tap ? detail::tabAt(ev.x, ev.y) : -1;
   if (cfg::TOUCH_DEBUG && ev.type == InputType::Tap) {
-    Serial.printf("tap %d,%d -> %s\n", ev.x, ev.y, backTap ? "back" : "detail area");
+    Serial.printf("tap %d,%d -> %s\n", ev.x, ev.y, backTap ? "back" : (tab >= 0 ? "tab" : "detail area"));
   }
   if (ev.type == InputType::Back || backTap) {
     showHome(nowMs);
   } else if (ev.type == InputType::Prev || ev.type == InputType::Next) {
     int step = ev.type == InputType::Next ? 1 : -1;
     highlight_ = wrap(ticker_ + step);
-    showDetail(highlight_, true, nowMs);
-  } else if (mode_ == Mode::AutoDetail) {
-    // Any other touch or SELECT while auto-showing: the user is looking, so pin it.
-    mode_ = Mode::PinnedDetail;
-    detail::setPinned(true);
+    showDetail(highlight_, true, nowMs);   // keeps the current page
+  } else if (tab >= 0 || ev.type == InputType::Select) {
+    // A tab picks its page; SELECT flips between the two.
+    if (tab >= 0) page_ = (detail::Page)tab;
+    else page_ = page_ == detail::Page::Chart ? detail::Page::Stats : detail::Page::Chart;
+    detail::setPage(ticker_, page_);
+    pinIfAuto();
+  } else {
+    pinIfAuto();   // any other touch while auto-showing: the user is looking, so pin it
   }
+}
+
+void ScreenManager::pinIfAuto() {
+  if (mode_ != Mode::AutoDetail) return;
+  mode_ = Mode::PinnedDetail;
+  detail::setPinned(true);
 }

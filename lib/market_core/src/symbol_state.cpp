@@ -2,7 +2,7 @@
 
 void SymbolState::applyQuote(const Quote& q, uint32_t nowMs, bool addToHistory) {
   quote = q;
-  if (addToHistory) intraday.push(q.price);
+  if (addToHistory) intraday.push(q.price, q.timestamp);   // timestamp = trade time from Finnhub
   // Keep the 52-week range current between weekly fetches.
   if (fundamentals.valid) {
     if (q.high > fundamentals.high52) fundamentals.high52 = q.high;

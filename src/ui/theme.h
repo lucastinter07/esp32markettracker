@@ -14,6 +14,8 @@ constexpr uint16_t UP        = 0x064A;  // green
 constexpr uint16_t DOWN      = 0xFA8A;  // red
 constexpr uint16_t ACCENT    = 0xFE00;  // amber
 constexpr uint16_t STAT_LABEL = ACCENT;  // labels on the detail screen's stats (OPEN, 52W HIGH...)
+constexpr uint16_t GRID      = 0x31A6;  // #303430: faint chart gridlines
+constexpr uint16_t FRAME     = 0x52AA;  // #505450: chart border
 
 inline uint16_t changeColor(float change) {
   return change >= 0 ? UP : DOWN;

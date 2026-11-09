@@ -27,6 +27,16 @@ bool timeNowET(EtTime& out) {
   return true;
 }
 
+void sessionBounds(uint32_t anyTime, uint32_t& openUnix, uint32_t& closeUnix) {
+  time_t t = anyTime;
+  struct tm et;
+  localtime_r(&t, &et);   // Eastern time, using the time zone rule above
+  uint32_t midnight = anyTime - (et.tm_hour * 3600 + et.tm_min * 60 + et.tm_sec);
+  openUnix = midnight + 9 * 3600 + 30 * 60;
+  bool early = isEarlyClose(et.tm_year + 1900, et.tm_mon + 1, et.tm_mday);
+  closeUnix = openUnix + (early ? 210 : 390) * 60;   // 3.5 h or 6.5 h
+}
+
 bool marketIsOpenNow() {
   EtTime now;
   return timeNowET(now) && marketStatus(now).phase == MarketPhase::Open;

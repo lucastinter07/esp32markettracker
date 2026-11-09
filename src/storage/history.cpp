@@ -8,13 +8,14 @@
 #include "net/time_sync.h"
 
 // File layout (all numbers little-endian, as the ESP32 stores them in memory):
-//   intraday.bin:     magic "MTI1", session day (int32), symbol count (uint8), then per symbol:
-//                     name (8 bytes), point count (uint16), points (float each)
+//   intraday.bin:     magic "MTI2", session day (int32), symbol count (uint8), then per symbol:
+//                     name (8 bytes), point count (uint16), prices (float each),
+//                     times (uint32 unix seconds each). (MTI1 had no times; it's ignored.)
 //   fundamentals.bin: magic "MTF1", symbol count (uint8), then per symbol:
 //                     name (8 bytes), Fundamentals struct (raw bytes)
 //   profiles.bin:     magic "MTP1", same layout with the Profile struct
 // Symbols are matched by name, so changing the watchlist doesn't scramble saved data.
-static const uint32_t MAGIC_INTRADAY = 0x3149544D;   // the bytes "MTI1"
+static const uint32_t MAGIC_INTRADAY = 0x3249544D;   // the bytes "MTI2"
 static const uint32_t MAGIC_FUNDAMENTALS = 0x3146544D;   // "MTF1"
 static const uint32_t MAGIC_PROFILES = 0x3150544D;       // "MTP1"
 static const char* INTRADAY_PATH = "/intraday.bin";
@@ -66,14 +67,19 @@ static void saveIntraday(int32_t sessionDay) {
   f.write((const uint8_t*)&MAGIC_INTRADAY, 4);
   f.write((const uint8_t*)&sessionDay, 4);
   f.write(&count, 1);
-  static float points[PriceSeries::CAPACITY];   // static: 1.5 KB is too much for the stack
+  static float points[PriceSeries::CAPACITY];   // static: 1.5 KB each is too much for the stack
+  static uint32_t times[PriceSeries::CAPACITY];
   for (int i = 0; i < NUM_SYMBOLS; i++) {
     const PriceSeries& series = symbolByIndex(i).intraday;
     uint16_t n = series.size();
-    for (uint16_t k = 0; k < n; k++) points[k] = series.at(k);
+    for (uint16_t k = 0; k < n; k++) {
+      points[k] = series.at(k);
+      times[k] = series.timeAt(k);
+    }
     writeName(f, symbolByIndex(i).symbol);
     f.write((const uint8_t*)&n, 2);
     f.write((const uint8_t*)points, n * sizeof(float));
+    f.write((const uint8_t*)times, n * sizeof(uint32_t));
   }
   f.close();
   replaceFile("/intraday.tmp", INTRADAY_PATH);
@@ -95,19 +101,21 @@ static void loadIntraday(int32_t sessionDay) {
     return;
   }
   static float points[PriceSeries::CAPACITY];
+  static uint32_t times[PriceSeries::CAPACITY];
   int restoredSymbols = 0;
   for (int i = 0; i < count; i++) {
     char name[NAME_LEN];
     uint16_t n = 0;
     if (f.read((uint8_t*)name, NAME_LEN) != NAME_LEN || f.read((uint8_t*)&n, 2) != 2) break;
-    uint16_t keep = n > PriceSeries::CAPACITY ? PriceSeries::CAPACITY : n;
+    if (n > PriceSeries::CAPACITY) break;   // not a file we wrote
+    uint16_t keep = n;
     f.read((uint8_t*)points, keep * sizeof(float));
-    if (keep < n) f.seek((n - keep) * sizeof(float), SeekCur);
+    f.read((uint8_t*)times, keep * sizeof(uint32_t));
     SymbolState* s = findSymbol(name);
     // Only replace if the saved chart is longer than what has arrived since boot.
     if (s && keep > s->intraday.size()) {
       s->intraday.clear();
-      for (uint16_t k = 0; k < keep; k++) s->intraday.push(points[k]);
+      for (uint16_t k = 0; k < keep; k++) s->intraday.push(points[k], times[k]);
       s->version++;
       restoredSymbols++;
     }

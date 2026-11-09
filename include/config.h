@@ -39,7 +39,7 @@ constexpr uint8_t BUZZER_PIN = 18;
 
 // ---- Screen cycle ----
 constexpr uint32_t HOME_DURATION_MS   = 30000;
-constexpr uint32_t DETAIL_DURATION_MS = 15000;
+constexpr uint32_t DETAIL_DURATION_MS = 20000;   // auto mode: chart page, then stats page halfway
 
 // ---- Watchlist ----
 constexpr int NUM_TICKERS = 5;
