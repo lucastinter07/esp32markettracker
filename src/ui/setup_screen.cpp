@@ -22,15 +22,15 @@ void drawFull() {
 
   text(20, 16, 3, theme::TEXT, "Wi-Fi setup");
 
-  text(20, 62, 2, theme::DIM, "1. On your phone, join:");
+  text(20, 62, 2, theme::LABEL, "1. On your phone, join:");
   text(44, 86, 3, theme::ACCENT, wifiSetupName());
 
-  text(20, 124, 2, theme::DIM, "2. Password:");
+  text(20, 124, 2, theme::LABEL, "2. Password:");
   text(180, 120, 3, theme::TEXT, wifiSetupPassword());
 
-  text(20, 160, 2, theme::DIM, "3. The setup page opens by itself.");
+  text(20, 160, 2, theme::LABEL, "3. The setup page opens by itself.");
   snprintf(buf, sizeof(buf), "   If not, visit %s", wifiSetupAddress());
-  text(20, 184, 2, theme::DIM, buf);
+  text(20, 184, 2, theme::LABEL, buf);
 
   const char* error = wifiSetupError();
   if (error[0] != '\0') {
@@ -40,9 +40,9 @@ void drawFull() {
 
   gfx.drawFastHLine(20, 248, 440, theme::PANEL);
   text(20, 262, 2, theme::TEXT, "SELECT");
-  text(116, 262, 2, theme::DIM, "retry saved network");
+  text(116, 262, 2, theme::LABEL, "retry saved network");
   text(20, 288, 2, theme::TEXT, "BACK");
-  text(116, 288, 2, theme::DIM, "continue offline");
+  text(116, 288, 2, theme::LABEL, "continue offline");
 }
 
 }  // namespace wifisetup

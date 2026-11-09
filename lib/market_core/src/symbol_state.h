@@ -35,11 +35,21 @@ struct Fundamentals {
   int32_t fetchedDay = 0;   // day number of the fetch (see dayNumber() in market_calendar)
 };
 
+// Company details from Finnhub's /stock/profile2, fetched about monthly.
+// Fixed-size text arrays (not pointers), so it can be saved to flash as raw bytes.
+struct Profile {
+  bool valid = false;
+  char name[48] = {};       // "Advanced Micro Devices, Inc."
+  char industry[32] = {};   // "Semiconductors"
+  int32_t fetchedDay = 0;
+};
+
 struct SymbolState {
   const char* symbol = "";
   Quote quote;
   PriceSeries intraday;
   Fundamentals fundamentals;
+  Profile profile;
   bool hasData = false;
   uint32_t lastUpdateMs = 0;
   // Goes up by one on every update. The UI compares it to the value it last drew,
@@ -52,6 +62,8 @@ struct SymbolState {
 
   // Stores freshly fetched metrics. Uses the current price to work out the share count.
   void applyMetrics(const MetricData& m, int32_t today);
+
+  void applyProfile(const Profile& p, int32_t today);
 
   float peRatio() const;      // price / EPS; 0 when not available or earnings are negative
   double marketCap() const;   // dollars; 0 when not available

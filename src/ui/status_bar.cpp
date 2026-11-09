@@ -76,7 +76,7 @@ static void buildContent(BarContent& c) {
       break;
     case MarketPhase::Closed:
       snprintf(c.phase, sizeof(c.phase), "CLOSED");
-      c.phaseColor = theme::DIM;
+      c.phaseColor = theme::LABEL;
       break;
   }
   if (s.phase != MarketPhase::Open) {
@@ -113,7 +113,7 @@ void statusBarDraw(bool force) {
   gfx.print(c.phase);
   int16_t detailX = 10 + strlen(c.phase) * 12 + 8;
   gfx.setTextSize(1);
-  gfx.setTextColor(theme::DIM, theme::PANEL);
+  gfx.setTextColor(theme::LABEL, theme::PANEL);
   gfx.setCursor(detailX, 11);
   gfx.print(c.detail);
 
@@ -124,7 +124,7 @@ void statusBarDraw(bool force) {
   gfx.setCursor(timeX, 7);
   gfx.print(c.time);
   gfx.setTextSize(1);
-  gfx.setTextColor(theme::DIM, theme::PANEL);
+  gfx.setTextColor(theme::LABEL, theme::PANEL);
   gfx.setCursor(timeX - 8 - strlen(c.date) * 6, 11);
   gfx.print(c.date);
 

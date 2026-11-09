@@ -96,7 +96,7 @@ static void drawIndex(int i) {
 
   gfx.fillRect(x + 2, y, w - 4, h, theme::PANEL);
   gfx.setTextSize(1);
-  gfx.setTextColor(theme::DIM, theme::PANEL);
+  gfx.setTextColor(theme::LABEL, theme::PANEL);
   gfx.setCursor(x + 10, y + 8);
   snprintf(buf, sizeof(buf), "%s (%s)", cfg::INDEX_LABELS[i], s.symbol);
   gfx.print(buf);

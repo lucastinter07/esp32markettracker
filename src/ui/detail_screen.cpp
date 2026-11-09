@@ -11,10 +11,12 @@ namespace detail {
 
 static const int16_t HEADER_H = 40;
 static const int16_t BACK_W = 120;
-static const int16_t CHART_X = 10, CHART_Y = 112, CHART_W = 270, CHART_H = 190;
+static const int16_t NAME_Y = 46;      // company name line, just below the header
+static const int16_t PRICE_Y = 66;
+static const int16_t CHART_X = 10, CHART_Y = 118, CHART_W = 270, CHART_H = 184;
 // Stats: two columns of four, 90 px wide and 48 px apart
 static const int16_t STATS_X[2] = {296, 386};
-static const int16_t STATS_Y = 112, STATS_ROW_H = 48;
+static const int16_t STATS_Y = 118, STATS_ROW_H = 48;
 static const int16_t BAR_Y = cfg::SCREEN_H - 6, BAR_H = 6;
 
 static uint32_t drawnVersion = 0;
@@ -33,7 +35,7 @@ static void drawBadge(bool pinned) {
   int16_t x = cfg::SCREEN_W - 100;
   gfx.fillRect(x, 0, 100, HEADER_H, theme::PANEL);
   gfx.setTextSize(2);
-  gfx.setTextColor(pinned ? theme::ACCENT : theme::DIM, theme::PANEL);
+  gfx.setTextColor(pinned ? theme::ACCENT : theme::LABEL, theme::PANEL);
   gfx.setCursor(x + 10, 12);
   gfx.print(pinned ? "PINNED" : "AUTO");
 }
@@ -68,7 +70,7 @@ static void formatMarketCap(char* buf, size_t size, double dollars) {
   else snprintf(buf, size, "%.0fM", dollars / 1e6);
 }
 
-// One stat: small grey label, larger value under it. "--" when there's no value yet.
+// One stat: small amber label, larger value under it. "--" when there's no value yet.
 static void drawStat(int col, int row, const char* label, const char* value) {
   DFRobot_GDL& gfx = display();
   int16_t x = STATS_X[col];
@@ -76,7 +78,7 @@ static void drawStat(int col, int row, const char* label, const char* value) {
   char padded[12];
   snprintf(padded, sizeof(padded), "%-7s", value[0] ? value : "--");   // spaces cover old text
   gfx.setTextSize(1);
-  gfx.setTextColor(theme::DIM, theme::BG);
+  gfx.setTextColor(theme::STAT_LABEL, theme::BG);
   gfx.setCursor(x, y);
   gfx.print(label);
   gfx.setTextSize(2);
@@ -98,26 +100,43 @@ static void drawData(int ticker) {
   const Fundamentals& f = s.fundamentals;
   uint16_t chg = theme::changeColor(q.change);
   int staleMin = staleMinutes(s);
-  char buf[32];
+  char buf[48];
+
+  // Full company name (from Finnhub's profile, saved in flash). Size 2 fits 38
+  // characters across; longer names end in "..".
+  gfx.fillRect(0, NAME_Y - 2, cfg::SCREEN_W, 20, theme::BG);
+  if (s.profile.valid) {
+    const int MAX_CHARS = (cfg::SCREEN_W - 20) / 12;
+    if ((int)strlen(s.profile.name) > MAX_CHARS) {
+      snprintf(buf, sizeof(buf), "%.*s..", MAX_CHARS - 2, s.profile.name);
+    } else {
+      snprintf(buf, sizeof(buf), "%s", s.profile.name);
+    }
+    gfx.setTextSize(2);
+    gfx.setTextColor(theme::STAT_LABEL, theme::BG);   // amber, like the stat labels
+    gfx.setCursor(10, NAME_Y);
+    gfx.print(buf);
+  }
 
   // Big price (grey when stale) + change line
   gfx.setTextSize(4);
   gfx.setTextColor(staleMin >= 0 ? theme::DIM : theme::TEXT, theme::BG);
-  gfx.setCursor(10, 52);
-  snprintf(buf, sizeof(buf), "%8.2f", q.price);
+  gfx.setCursor(10, PRICE_Y);
+  // Left-aligned like the name; the trailing spaces ("%-8") cover a longer old price.
+  snprintf(buf, sizeof(buf), "%-8.2f", q.price);
   gfx.print(buf);
   gfx.setTextSize(2);
   gfx.setTextColor(chg, theme::BG);
-  gfx.setCursor(220, 66);
+  gfx.setCursor(220, PRICE_Y + 14);
   snprintf(buf, sizeof(buf), "%+.2f (%+.2f%%)   ", q.change, q.changePct);
   gfx.print(buf);
 
   // Stale note under the price
-  gfx.fillRect(10, 92, 260, 10, theme::BG);
+  gfx.fillRect(10, PRICE_Y + 35, 260, 10, theme::BG);
   if (staleMin >= 0) {
     gfx.setTextSize(1);
     gfx.setTextColor(theme::ACCENT, theme::BG);
-    gfx.setCursor(10, 94);
+    gfx.setCursor(10, PRICE_Y + 36);
     snprintf(buf, sizeof(buf), "DELAYED: last update %d min ago", staleMin);
     gfx.print(buf);
   }

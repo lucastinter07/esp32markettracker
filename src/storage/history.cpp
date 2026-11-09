@@ -12,11 +12,14 @@
 //                     name (8 bytes), point count (uint16), points (float each)
 //   fundamentals.bin: magic "MTF1", symbol count (uint8), then per symbol:
 //                     name (8 bytes), Fundamentals struct (raw bytes)
+//   profiles.bin:     magic "MTP1", same layout with the Profile struct
 // Symbols are matched by name, so changing the watchlist doesn't scramble saved data.
 static const uint32_t MAGIC_INTRADAY = 0x3149544D;   // the bytes "MTI1"
 static const uint32_t MAGIC_FUNDAMENTALS = 0x3146544D;   // "MTF1"
+static const uint32_t MAGIC_PROFILES = 0x3150544D;       // "MTP1"
 static const char* INTRADAY_PATH = "/intraday.bin";
 static const char* FUNDAMENTALS_PATH = "/fundamentals.bin";
+static const char* PROFILES_PATH = "/profiles.bin";
 static const int NAME_LEN = 8;
 
 static bool mounted = false;
@@ -113,47 +116,63 @@ static void loadIntraday(int32_t sessionDay) {
   Serial.printf("storage: restored chart points for %d symbols\n", restoredSymbols);
 }
 
-// ---------- company stats ----------
+// ---------- company stats and profiles ----------
+//
+// Both are one fixed-size struct per symbol, so one pair of functions handles both.
+// `T` is the struct type (Fundamentals or Profile). `field` is a pointer-to-member: it
+// names which member of SymbolState to use, e.g. &SymbolState::profile, and
+// `symbol.*field` then means "that member of this symbol".
 
-void storageSaveFundamentals() {
+template <typename T>
+static void saveRecords(const char* path, uint32_t magic, T SymbolState::*field) {
   if (!mounted) return;
-  File f = LittleFS.open("/fundamentals.tmp", "w");
+  String tmpPath = String(path) + ".tmp";
+  File f = LittleFS.open(tmpPath, "w");
   if (!f) return;
   uint8_t count = NUM_SYMBOLS;
-  f.write((const uint8_t*)&MAGIC_FUNDAMENTALS, 4);
+  f.write((const uint8_t*)&magic, 4);
   f.write(&count, 1);
   for (int i = 0; i < NUM_SYMBOLS; i++) {
     writeName(f, symbolByIndex(i).symbol);
-    f.write((const uint8_t*)&symbolByIndex(i).fundamentals, sizeof(Fundamentals));
+    f.write((const uint8_t*)&(symbolByIndex(i).*field), sizeof(T));
   }
   f.close();
-  replaceFile("/fundamentals.tmp", FUNDAMENTALS_PATH);
+  replaceFile(tmpPath.c_str(), path);
 }
 
-static void loadFundamentals() {
-  if (!LittleFS.exists(FUNDAMENTALS_PATH)) return;
-  File f = LittleFS.open(FUNDAMENTALS_PATH, "r");
+template <typename T>
+static void loadRecords(const char* path, uint32_t magic, T SymbolState::*field) {
+  if (!LittleFS.exists(path)) return;
+  File f = LittleFS.open(path, "r");
   if (!f) return;
-  uint32_t magic = 0;
+  uint32_t fileMagic = 0;
   uint8_t count = 0;
-  f.read((uint8_t*)&magic, 4);
+  f.read((uint8_t*)&fileMagic, 4);
   f.read(&count, 1);
-  if (magic != MAGIC_FUNDAMENTALS) {
+  if (fileMagic != magic) {
     f.close();
     return;
   }
   for (int i = 0; i < count; i++) {
     char name[NAME_LEN];
-    Fundamentals fund;
+    T record;
     if (f.read((uint8_t*)name, NAME_LEN) != NAME_LEN) break;
-    if (f.read((uint8_t*)&fund, sizeof(fund)) != sizeof(fund)) break;
+    if (f.read((uint8_t*)&record, sizeof(T)) != sizeof(T)) break;
     SymbolState* s = findSymbol(name);
-    if (s && fund.valid) {
-      s->fundamentals = fund;
+    if (s && record.valid) {
+      s->*field = record;
       s->version++;
     }
   }
   f.close();
+}
+
+void storageSaveFundamentals() {
+  saveRecords(FUNDAMENTALS_PATH, MAGIC_FUNDAMENTALS, &SymbolState::fundamentals);
+}
+
+void storageSaveProfiles() {
+  saveRecords(PROFILES_PATH, MAGIC_PROFILES, &SymbolState::profile);
 }
 
 // ---------- public ----------
@@ -171,7 +190,8 @@ void storageUpdate(uint32_t nowMs) {
 
   if (!restored) {
     loadIntraday(lastSessionDay(now));
-    loadFundamentals();
+    loadRecords(FUNDAMENTALS_PATH, MAGIC_FUNDAMENTALS, &SymbolState::fundamentals);
+    loadRecords(PROFILES_PATH, MAGIC_PROFILES, &SymbolState::profile);
     restored = true;
   }
 

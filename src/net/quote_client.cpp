@@ -10,6 +10,7 @@
 #include "metrics_parser.h"
 #include "net/finnhub_ca.h"
 #include "net/time_sync.h"
+#include "profile_parser.h"
 #include "quote_parser.h"
 #include "storage/history.h"
 
@@ -24,23 +25,25 @@ static const uint32_t ERROR_RETRY_MS = 10000;
 static const uint32_t RATE_LIMIT_BACKOFF_MS = 60000;   // Finnhub's limit is per minute
 static const uint32_t BAD_KEY_RETRY_MS = 600000;
 static const uint32_t METRICS_RETRY_MS = 600000;       // after a failed stats download
-static const uint32_t METRICS_CHECK_MS = 10000;        // how often the main loop checks if stats are due
+static const uint32_t METRICS_CHECK_MS = 10000;        // how often the main loop checks if stats/names are due
 static const uint32_t TASK_STACK_BYTES = 12288;        // HTTPS + JSON streaming need a roomy stack
 
 // One message from the background task to the main loop.
-enum class MsgKind : uint8_t { Quote, NewSession, Metrics };
+enum class MsgKind : uint8_t { Quote, NewSession, Metrics, Profile };
 struct QuoteMsg {
   MsgKind kind;
   int8_t index;        // symbol number
   bool addToHistory;   // only quotes taken while the market is open become chart points
-  int32_t day;         // for Metrics: day number of the fetch
+  int32_t day;         // for Metrics/Profile: day number of the fetch
   Quote quote;
   MetricData metrics;
+  Profile profile;
 };
 
 static QueueHandle_t queue = nullptr;
 static volatile FeedStatus status = FeedStatus::Starting;   // written by the task, read by the UI
 static volatile bool metricsRequested = false;              // set by the main loop, cleared by the task
+static volatile bool profilesRequested = false;             // same, for company names
 
 enum class Fetch { Ok, UnknownSymbol, BadKey, RateLimited, Failed };
 
@@ -72,6 +75,25 @@ static Fetch fetchQuote(HTTPClient& http, WiFiClientSecure& tls, const char* sym
   // request, which saves a new TLS handshake (several KB of data) every time.
   http.end();
   if (result == Fetch::Failed) tls.stop();   // start clean after an error
+  return result;
+}
+
+// Company name and industry: a small (~440 B) reply, so it uses the same kept-open
+// connection as the quotes.
+static Fetch fetchProfile(HTTPClient& http, WiFiClientSecure& tls, const char* symbol, Profile& out) {
+  String url = String("https://finnhub.io/api/v1/stock/profile2?symbol=") + symbol;
+  if (!http.begin(tls, url)) return Fetch::Failed;
+  http.addHeader("X-Finnhub-Token", FINNHUB_API_KEY);
+  int code = http.GET();
+  Fetch result;
+  if (code == 200) {
+    String body = http.getString();
+    result = parseProfile(body.c_str(), out) ? Fetch::Ok : Fetch::UnknownSymbol;
+  } else {
+    result = fromHttpCode(code, "profile", symbol);
+  }
+  http.end();
+  if (result == Fetch::Failed) tls.stop();
   return result;
 }
 
@@ -134,6 +156,24 @@ static bool fetchAllMetrics(WiFiClientSecure& tls, int32_t today) {
   return allOk;
 }
 
+// Downloads the company name for every stock (ETFs have no profile). Returns false if
+// any failed, so the task can try again later.
+static bool fetchAllProfiles(HTTPClient& http, WiFiClientSecure& tls, int32_t today) {
+  bool allOk = true;
+  for (int i = 0; i < cfg::NUM_TICKERS; i++) {
+    QuoteMsg msg{};
+    msg.kind = MsgKind::Profile;
+    msg.index = (int8_t)i;
+    msg.day = today;
+    Fetch r = fetchProfile(http, tls, symbolByIndex(i).symbol, msg.profile);
+    if (r == Fetch::Ok) sendToMainLoop(msg);
+    else if (r != Fetch::UnknownSymbol) allOk = false;
+    vTaskDelay(pdMS_TO_TICKS(CLOSED_PASS_GAP_MS));
+  }
+  Serial.printf("quotes: company names %s\n", allOk ? "updated" : "incomplete, will retry");
+  return allOk;
+}
+
 // Runs forever in its own FreeRTOS task.
 static void quoteTask(void*) {
   // static: these objects are large, so keep them off this task's stack
@@ -148,6 +188,7 @@ static void quoteTask(void*) {
   int8_t lastOpen = -1;             // -1 = not known yet (clock not synced)
   uint32_t passAllowedAt = 0;       // a closed-market pass waits until this millis()
   uint32_t metricsRetryAt = 0;
+  uint32_t profilesRetryAt = 0;
   int next = 0;
 
   for (;;) {
@@ -177,6 +218,15 @@ static void quoteTask(void*) {
         passAllowedAt = millis() + CLOSE_PASS_DELAY_MS;  // after the closing prints settle
       }
       lastOpen = open ? 1 : 0;
+    }
+
+    if (profilesRequested && haveTime && (int32_t)(millis() - profilesRetryAt) >= 0) {
+      if (fetchAllProfiles(http, tls, dayNumber(now.year, now.month, now.day))) {
+        profilesRequested = false;
+      } else {
+        profilesRetryAt = millis() + METRICS_RETRY_MS;
+      }
+      continue;
     }
 
     if (metricsRequested && haveTime && (int32_t)(millis() - metricsRetryAt) >= 0) {
@@ -239,29 +289,43 @@ static void quoteTask(void*) {
   }
 }
 
-// Main loop: asks the task for company stats when they're missing or older than
-// cfg::METRICS_REFRESH_DAYS. Waits until saved stats are restored (so a restart doesn't
-// re-download them) and every stock has a price (needed to work out the share count).
-static void requestMetricsIfDue(uint32_t nowMs) {
+// Main loop: asks the task for company names and stats when they're missing or older
+// than cfg::PROFILE_REFRESH_DAYS / cfg::METRICS_REFRESH_DAYS. Waits until saved data is
+// restored, so a restart doesn't re-download it.
+static void requestDataIfDue(uint32_t nowMs) {
   static uint32_t lastCheckMs = 0;
-  static int32_t requestedDay = -1;
+  static int32_t profilesRequestedDay = -1;
+  static int32_t metricsRequestedDay = -1;
   if (nowMs - lastCheckMs < METRICS_CHECK_MS) return;
   lastCheckMs = nowMs;
 
   EtTime now;
   if (!storageRestored() || !timeNowET(now)) return;
   int32_t today = dayNumber(now.year, now.month, now.day);
-  if (today == requestedDay) return;
 
+  // Names don't depend on prices, so they can be requested straight away.
+  if (today != profilesRequestedDay) {
+    for (int i = 0; i < cfg::NUM_TICKERS; i++) {
+      const Profile& p = stock(i).profile;
+      if (!p.valid || today - p.fetchedDay >= cfg::PROFILE_REFRESH_DAYS) {
+        profilesRequested = true;
+        profilesRequestedDay = today;
+        break;
+      }
+    }
+  }
+
+  // Stats need every stock's price first (to work out the share count).
+  if (today == metricsRequestedDay) return;
   bool due = false;
   for (int i = 0; i < cfg::NUM_TICKERS; i++) {
     const SymbolState& s = stock(i);
-    if (!s.hasData) return;   // wait for prices first
+    if (!s.hasData) return;
     if (!s.fundamentals.valid || today - s.fundamentals.fetchedDay >= cfg::METRICS_REFRESH_DAYS) due = true;
   }
   if (due) {
     metricsRequested = true;
-    requestedDay = today;
+    metricsRequestedDay = today;
   }
 }
 
@@ -288,9 +352,13 @@ void quoteClientApply(uint32_t nowMs) {
         symbolByIndex(msg.index).applyMetrics(msg.metrics, msg.day);
         storageSaveFundamentals();
         break;
+      case MsgKind::Profile:
+        symbolByIndex(msg.index).applyProfile(msg.profile, msg.day);
+        storageSaveProfiles();
+        break;
     }
   }
-  requestMetricsIfDue(nowMs);
+  requestDataIfDue(nowMs);
 }
 
 FeedStatus quoteFeedStatus() {

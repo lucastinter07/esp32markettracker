@@ -23,6 +23,13 @@ void SymbolState::applyMetrics(const MetricData& m, int32_t today) {
   version++;
 }
 
+void SymbolState::applyProfile(const Profile& p, int32_t today) {
+  profile = p;
+  profile.valid = true;
+  profile.fetchedDay = today;
+  version++;
+}
+
 float SymbolState::peRatio() const {
   if (!fundamentals.valid || !hasData || fundamentals.epsTTM <= 0) return 0;
   return quote.price / fundamentals.epsTTM;

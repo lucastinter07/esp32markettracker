@@ -8,10 +8,12 @@ constexpr uint16_t BG        = 0x0000;  // black
 constexpr uint16_t PANEL     = 0x18E3;  // dark gray
 constexpr uint16_t HIGHLIGHT = 0x29EB;  // muted blue, selected row
 constexpr uint16_t TEXT      = 0xFFFF;  // white
-constexpr uint16_t DIM       = 0x8410;  // gray, labels
+constexpr uint16_t DIM       = 0x8410;  // mid gray: faded values (stale prices, "waiting...")
+constexpr uint16_t LABEL     = 0xC638;  // light gray: labels and secondary text, readable on black
 constexpr uint16_t UP        = 0x064A;  // green
 constexpr uint16_t DOWN      = 0xFA8A;  // red
 constexpr uint16_t ACCENT    = 0xFE00;  // amber
+constexpr uint16_t STAT_LABEL = ACCENT;  // labels on the detail screen's stats (OPEN, 52W HIGH...)
 
 inline uint16_t changeColor(float change) {
   return change >= 0 ? UP : DOWN;

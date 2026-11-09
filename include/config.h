@@ -44,7 +44,6 @@ constexpr uint32_t DETAIL_DURATION_MS = 15000;
 // ---- Watchlist ----
 constexpr int NUM_TICKERS = 5;
 constexpr const char* TICKERS[NUM_TICKERS] = {"NEE", "AMD", "INTC", "VRT", "AAPL"};
-constexpr const char* COMPANYNAME[NUM_TICKERS] = {"NextEra Energy", "Advanced Microcontrollers"};
 
 // Index ETFs stand in for the indexes (free tier has no raw index data).
 constexpr int NUM_INDEXES = 2;
@@ -67,6 +66,9 @@ constexpr uint32_t STALE_AFTER_S = QUOTE_REFRESH_S * 3;
 // Company stats (52-week range, P/E, market cap) come from a ~196 KB response, so
 // they're fetched only this often and kept current from live prices in between.
 constexpr int METRICS_REFRESH_DAYS = 7;
+
+// Company names (Finnhub /stock/profile2, ~440 B each) rarely change: refetched monthly.
+constexpr int PROFILE_REFRESH_DAYS = 30;
 
 // While the market is open, today's chart points are saved to flash this often, so a
 // restart doesn't lose the day's chart.
