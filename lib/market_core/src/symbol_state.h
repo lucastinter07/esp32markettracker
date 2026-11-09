@@ -1,6 +1,7 @@
 // Everything the device knows about one symbol: the latest quote plus its stored history.
 #pragma once
 #include <stdint.h>
+#include "history.h"
 #include "price_series.h"
 
 // Mirrors the fields of Finnhub's /quote response.
@@ -50,6 +51,7 @@ struct SymbolState {
   PriceSeries intraday;
   Fundamentals fundamentals;
   Profile profile;
+  History history;      // backfilled daily + 30-minute closes (Twelve Data)
   bool hasData = false;
   uint32_t lastUpdateMs = 0;
   // Goes up by one on every update. The UI compares it to the value it last drew,

@@ -95,7 +95,8 @@ static void formatMarketCap(char* buf, size_t size, double dollars) {
 
 // One stats row: amber label on the left, value right-aligned at the column's edge.
 // "%7s" pads the value on the left, so a shorter new value covers a longer old one.
-static void drawStat(int col, int row, const char* label, const char* value) {
+static void drawStat(int col, int row, const char* label, const char* value,
+                     uint16_t valueColor = theme::TEXT) {
   DFRobot_GDL& gfx = display();
   int16_t x = STAT_COL_X[col];
   int16_t y = STAT_Y + row * STAT_ROW_H;
@@ -105,9 +106,24 @@ static void drawStat(int col, int row, const char* label, const char* value) {
   gfx.setTextColor(theme::STAT_LABEL, theme::BG);
   gfx.setCursor(x, y);
   gfx.print(label);
-  gfx.setTextColor(theme::TEXT, theme::BG);
+  gfx.setTextColor(valueColor, theme::BG);
   gfx.setCursor(x + STAT_COL_W - 7 * 12, y);
   gfx.print(padded);
+}
+
+// Change over the last `sessions` trading days, from the backfilled daily closes.
+// "--" until there's enough history (or without a Twelve Data key).
+static void drawChangeStat(int col, int row, const char* label, const SymbolState& s, int sessions) {
+  EtTime now;
+  float pct;
+  if (s.hasData && timeNowET(now) &&
+      changeOverSessions(s.history, lastSessionDay(now), s.quote.price, sessions, pct)) {
+    char buf[12];
+    snprintf(buf, sizeof(buf), "%+.2f%%", pct);
+    drawStat(col, row, label, buf, theme::changeColor(pct));
+  } else {
+    drawStat(col, row, label, "");
+  }
 }
 
 static void drawPriceStat(int col, int row, const char* label, float v) {
@@ -137,6 +153,10 @@ static void drawStatsPage(const SymbolState& s) {
   double cap = s.marketCap();
   if (cap > 0) formatMarketCap(buf, sizeof(buf), cap);
   drawStat(1, 3, "MKT CAP", buf);
+
+  // Bottom row: change over 1 week (5 sessions) and 1 month (21 sessions)
+  drawChangeStat(0, 4, "1 WEEK", s, 5);
+  drawChangeStat(1, 4, "1 MONTH", s, 21);
 }
 
 static void drawBody(const SymbolState& s) {
@@ -175,13 +195,16 @@ static void drawTop(const SymbolState& s) {
   gfx.setTextSize(4);
   gfx.setTextColor(staleMin >= 0 ? theme::DIM : theme::TEXT, theme::BG);
   gfx.setCursor(10, PRICE_Y);
-  // Left-aligned like the name; the trailing spaces ("%-8") cover a longer old price.
-  snprintf(buf, sizeof(buf), "%-8.2f", q.price);
+  // Left-aligned like the name, with the change following right after it.
+  snprintf(buf, sizeof(buf), "%.2f", q.price);
   gfx.print(buf);
+  int16_t priceEnd = 10 + (int16_t)strlen(buf) * 24;   // size 4 = 24 px per character
+  // Clear everything right of the price (an older, longer price or change text).
+  gfx.fillRect(priceEnd, PRICE_Y, cfg::SCREEN_W - priceEnd, 32, theme::BG);
   gfx.setTextSize(2);
   gfx.setTextColor(chg, theme::BG);
-  gfx.setCursor(220, PRICE_Y + 14);
-  snprintf(buf, sizeof(buf), "%+.2f (%+.2f%%)   ", q.change, q.changePct);
+  gfx.setCursor(priceEnd + 16, PRICE_Y + 14);   // bottom-aligned with the big digits
+  snprintf(buf, sizeof(buf), "%+.2f (%+.2f%%)", q.change, q.changePct);
   gfx.print(buf);
 
   // Stale note under the price

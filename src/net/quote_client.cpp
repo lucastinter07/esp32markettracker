@@ -17,6 +17,9 @@
 #ifndef FINNHUB_API_KEY
 #define FINNHUB_API_KEY ""   // normally set from .env by tools/load_env.py
 #endif
+#ifndef TWELVEDATA_API_KEY
+#define TWELVEDATA_API_KEY ""   // optional: history backfill is skipped without it
+#endif
 
 static const uint32_t CLOSED_PASS_GAP_MS = 1500;       // between requests while catching up
 static const uint32_t CLOSE_PASS_DELAY_MS = 120000;    // let closing prices settle first
@@ -27,6 +30,8 @@ static const uint32_t BAD_KEY_RETRY_MS = 600000;
 static const uint32_t METRICS_RETRY_MS = 600000;       // after a failed stats download
 static const uint32_t METRICS_CHECK_MS = 10000;        // how often the main loop checks if stats/names are due
 static const uint32_t TASK_STACK_BYTES = 12288;        // HTTPS + JSON streaming need a roomy stack
+static const uint32_t TD_GAP_MS = 8000;                // Twelve Data free plan: 8 requests/minute
+static const uint32_t HISTORY_RETRY_MS = 600000;       // after a failed history download
 
 // One message from the background task to the main loop.
 enum class MsgKind : uint8_t { Quote, NewSession, Metrics, Profile };
@@ -40,10 +45,19 @@ struct QuoteMsg {
   Profile profile;
 };
 
+// History is ~800 bytes per stock, so it has its own small queue rather than making
+// every quote message that big.
+struct HistoryMsg {
+  int8_t index;
+  History history;
+};
+
 static QueueHandle_t queue = nullptr;
+static QueueHandle_t historyQueue = nullptr;
 static volatile FeedStatus status = FeedStatus::Starting;   // written by the task, read by the UI
 static volatile bool metricsRequested = false;              // set by the main loop, cleared by the task
 static volatile bool profilesRequested = false;             // same, for company names
+static volatile bool historyRequested = false;              // same, for the Twelve Data backfill
 
 enum class Fetch { Ok, UnknownSymbol, BadKey, RateLimited, Failed };
 
@@ -174,6 +188,48 @@ static bool fetchAllProfiles(HTTPClient& http, WiFiClientSecure& tls, int32_t to
   return allOk;
 }
 
+// ---------- Twelve Data history backfill ----------
+
+// One CSV request. Twelve Data answers errors as JSON with an HTTP error code.
+static Fetch fetchTwelveData(HTTPClient& http, WiFiClientSecure& tls, const char* symbol,
+                             const char* interval, int rows, String& body) {
+  String url = String("https://api.twelvedata.com/time_series?symbol=") + symbol +
+               "&interval=" + interval + "&outputsize=" + rows + "&timezone=UTC&format=CSV";
+  if (!http.begin(tls, url)) return Fetch::Failed;
+  http.addHeader("Authorization", String("apikey ") + TWELVEDATA_API_KEY);
+  int code = http.GET();
+  Fetch result;
+  if (code == 200) {
+    body = http.getString();
+    result = Fetch::Ok;
+  } else if (code == 400 || code == 404) {
+    result = Fetch::UnknownSymbol;
+  } else {
+    result = fromHttpCode(code, "history", symbol);
+  }
+  http.end();
+  if (result == Fetch::Failed) tls.stop();
+  return result;
+}
+
+// Daily closes (1M, 1W/1M change) then 30-minute closes (5D) for one stock: two
+// requests, spaced to respect the free plan's 8 per minute.
+static Fetch fetchHistory(HTTPClient& http, WiFiClientSecure& tls, const char* symbol, int32_t throughDay,
+                          History& out) {
+  String body;
+  Fetch r = fetchTwelveData(http, tls, symbol, "1day", HISTORY_DAYS - 2, body);
+  if (r != Fetch::Ok) return r;
+  if (!parseDailyCsv(body.c_str(), out)) return Fetch::UnknownSymbol;
+  vTaskDelay(pdMS_TO_TICKS(TD_GAP_MS));
+
+  r = fetchTwelveData(http, tls, symbol, "30min", HISTORY_BARS, body);
+  if (r != Fetch::Ok) return r;
+  if (!parseBarsCsv(body.c_str(), out)) return Fetch::UnknownSymbol;
+  out.valid = true;
+  out.throughDay = throughDay;
+  return Fetch::Ok;
+}
+
 // Runs forever in its own FreeRTOS task.
 static void quoteTask(void*) {
   // static: these objects are large, so keep them off this task's stack
@@ -182,6 +238,13 @@ static void quoteTask(void*) {
   tls.setCACert(FINNHUB_ROOT_CAS);   // only trust Finnhub's real certificate
   http.setReuse(true);
   http.setTimeout(8000);
+  // A second connection for Twelve Data, so switching between the two services doesn't
+  // tear down the kept-open Finnhub connection. Its certificate chain uses the same roots.
+  static WiFiClientSecure tdTls;
+  static HTTPClient tdHttp;
+  tdTls.setCACert(FINNHUB_ROOT_CAS);
+  tdHttp.setReuse(true);
+  tdHttp.setTimeout(10000);
 
   const uint32_t openGapMs = (uint32_t)cfg::QUOTE_REFRESH_S * 1000 / NUM_SYMBOLS;
   bool fetched[NUM_SYMBOLS] = {};   // progress of the current closed-market pass
@@ -189,6 +252,9 @@ static void quoteTask(void*) {
   uint32_t passAllowedAt = 0;       // a closed-market pass waits until this millis()
   uint32_t metricsRetryAt = 0;
   uint32_t profilesRetryAt = 0;
+  uint32_t historyRetryAt = 0;
+  int historyNext = 0;              // which stock the backfill does next
+  bool historyJustRan = false;      // during the session, alternate history and quotes
   int next = 0;
 
   for (;;) {
@@ -237,6 +303,34 @@ static void quoteTask(void*) {
       }
       continue;
     }
+
+    // History backfill: one stock per pass. While the market is open, a quote runs
+    // between each stock, so prices keep updating (just more slowly) during the backfill.
+    bool historyTurn = !(open && historyJustRan);
+    if (historyRequested && haveTime && historyTurn && (int32_t)(millis() - historyRetryAt) >= 0) {
+      HistoryMsg hmsg{};
+      hmsg.index = (int8_t)historyNext;
+      const char* symbol = symbolByIndex(historyNext).symbol;
+      Fetch r = fetchHistory(tdHttp, tdTls, symbol, lastCompletedSessionDay(now), hmsg.history);
+      if (r == Fetch::Ok) xQueueSend(historyQueue, &hmsg, portMAX_DELAY);
+      if (r == Fetch::Ok || r == Fetch::UnknownSymbol) {
+        historyNext++;
+      } else if (r == Fetch::BadKey) {
+        Serial.println("quotes: Twelve Data rejected its API key (check .env, then rebuild)");
+        historyRequested = false;
+      } else {
+        historyRetryAt = millis() + (r == Fetch::RateLimited ? RATE_LIMIT_BACKOFF_MS : HISTORY_RETRY_MS);
+      }
+      if (historyNext >= cfg::NUM_TICKERS) {
+        historyNext = 0;
+        historyRequested = false;
+        Serial.println("quotes: price history updated");
+      }
+      historyJustRan = true;
+      vTaskDelay(pdMS_TO_TICKS(TD_GAP_MS));
+      continue;
+    }
+    historyJustRan = false;
 
     if (!open) {
       int i = 0;
@@ -315,6 +409,21 @@ static void requestDataIfDue(uint32_t nowMs) {
     }
   }
 
+  // History: missing, or doesn't include the last finished session yet (re-checked
+  // 15 min after each close). Asked for at most once per finished session.
+  static int32_t historyRequestedFor = -1;
+  int32_t completed = lastCompletedSessionDay(now);
+  if (TWELVEDATA_API_KEY[0] != '\0' && completed != historyRequestedFor) {
+    for (int i = 0; i < cfg::NUM_TICKERS; i++) {
+      const History& h = stock(i).history;
+      if (!h.valid || h.throughDay < completed) {
+        historyRequested = true;
+        historyRequestedFor = completed;
+        break;
+      }
+    }
+  }
+
   // Stats need every stock's price first (to work out the share count).
   if (today == metricsRequestedDay) return;
   bool due = false;
@@ -331,6 +440,7 @@ static void requestDataIfDue(uint32_t nowMs) {
 
 void quoteClientStart() {
   queue = xQueueCreate(16, sizeof(QuoteMsg));
+  historyQueue = xQueueCreate(2, sizeof(HistoryMsg));
   // Core 0 runs the Wi-Fi driver; the Arduino loop (screen, touch) runs on core 1.
   xTaskCreatePinnedToCore(quoteTask, "quotes", TASK_STACK_BYTES, nullptr, 1, nullptr, 0);
 }
@@ -357,6 +467,14 @@ void quoteClientApply(uint32_t nowMs) {
         storageSaveProfiles();
         break;
     }
+  }
+  // static: a HistoryMsg is ~800 bytes, too big to put on the loop's stack every pass
+  static HistoryMsg hmsg;
+  while (historyQueue && xQueueReceive(historyQueue, &hmsg, 0) == pdTRUE) {
+    SymbolState& s = symbolByIndex(hmsg.index);
+    s.history = hmsg.history;
+    s.version++;
+    storageSaveHistory();
   }
   requestDataIfDue(nowMs);
 }

@@ -135,6 +135,18 @@ int32_t dayNumber(int year, int month, int day) {
   return daysFromCivil(year, month, day);
 }
 
+int32_t lastCompletedSessionDay(const EtTime& now) {
+  int32_t today = daysFromCivil(now.year, now.month, now.day);
+  int minuteOfDay = now.hour * 60 + now.minute;
+  if (isTradingDays(today)) {
+    int close = isEarlyCloseDays(now.year, today) ? EARLY_CLOSE_MIN : CLOSE_MIN;
+    if (minuteOfDay >= close + 15) return today;
+  }
+  int32_t day = today - 1;
+  while (!isTradingDays(day) && day > today - 10) day--;
+  return day;
+}
+
 int32_t lastSessionDay(const EtTime& now) {
   int32_t today = daysFromCivil(now.year, now.month, now.day);
   int minuteOfDay = now.hour * 60 + now.minute;

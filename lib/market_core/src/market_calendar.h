@@ -43,6 +43,10 @@ int32_t dayNumber(int year, int month, int day);
 // on a trading day, otherwise the previous trading day (e.g. Friday, all weekend).
 int32_t lastSessionDay(const EtTime& now);
 
+// Day number of the most recent session that has finished, counting a session as finished
+// 15 minutes after its close (so data providers have published the final prices).
+int32_t lastCompletedSessionDay(const EtTime& now);
+
 // Date helpers (also used by the tests)
 int weekdayOf(int year, int month, int day);   // 0 = Sunday ... 6 = Saturday
 void easterSunday(int year, int& month, int& day);

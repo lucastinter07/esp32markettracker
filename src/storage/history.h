@@ -16,3 +16,4 @@ void storageUpdate(uint32_t nowMs);   // every loop: restores once the clock is 
 bool storageRestored();               // true once saved data has been loaded (or there was none)
 void storageSaveFundamentals();       // call after new company stats arrive
 void storageSaveProfiles();           // call after new company names arrive
+void storageSaveHistory();            // call after backfilled history arrives

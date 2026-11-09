@@ -14,13 +14,16 @@
 //   fundamentals.bin: magic "MTF1", symbol count (uint8), then per symbol:
 //                     name (8 bytes), Fundamentals struct (raw bytes)
 //   profiles.bin:     magic "MTP1", same layout with the Profile struct
+//   history.bin:      magic "MTH1", same layout with the History struct (backfill)
 // Symbols are matched by name, so changing the watchlist doesn't scramble saved data.
 static const uint32_t MAGIC_INTRADAY = 0x3249544D;   // the bytes "MTI2"
 static const uint32_t MAGIC_FUNDAMENTALS = 0x3146544D;   // "MTF1"
 static const uint32_t MAGIC_PROFILES = 0x3150544D;       // "MTP1"
+static const uint32_t MAGIC_HISTORY = 0x3148544D;        // "MTH1"
 static const char* INTRADAY_PATH = "/intraday.bin";
 static const char* FUNDAMENTALS_PATH = "/fundamentals.bin";
 static const char* PROFILES_PATH = "/profiles.bin";
+static const char* HISTORY_PATH = "/history.bin";
 static const int NAME_LEN = 8;
 
 static bool mounted = false;
@@ -44,10 +47,26 @@ static SymbolState* findSymbol(const char* name) {
   return nullptr;
 }
 
+// True if `path` (e.g. "/history.bin") exists. Reads the directory listing rather than
+// calling LittleFS.exists(), because in this core exists() tries to open the file and
+// logs an error whenever it's missing.
+static bool fileExists(const char* path) {
+  File dir = LittleFS.open("/");
+  if (!dir) return false;
+  bool found = false;
+  for (File f = dir.openNextFile(); f && !found; f = dir.openNextFile()) {
+    const char* name = f.name();   // may or may not include the leading "/"
+    found = strcmp(name, path) == 0 || strcmp(name, path + 1) == 0;
+    f.close();
+  }
+  dir.close();
+  return found;
+}
+
 // Writes to a temporary file, then swaps it in, so a power cut mid-save can never
 // leave a half-written file behind.
 static void replaceFile(const char* tmpPath, const char* path) {
-  if (LittleFS.exists(path)) LittleFS.remove(path);   // checking first avoids a noisy error log
+  if (fileExists(path)) LittleFS.remove(path);   // checking first avoids a noisy error log
   LittleFS.rename(tmpPath, path);
 }
 
@@ -86,7 +105,7 @@ static void saveIntraday(int32_t sessionDay) {
 }
 
 static void loadIntraday(int32_t sessionDay) {
-  if (!LittleFS.exists(INTRADAY_PATH)) return;   // nothing saved yet
+  if (!fileExists(INTRADAY_PATH)) return;   // nothing saved yet
   File f = LittleFS.open(INTRADAY_PATH, "r");
   if (!f) return;
   uint32_t magic = 0;
@@ -148,19 +167,21 @@ static void saveRecords(const char* path, uint32_t magic, T SymbolState::*field)
   replaceFile(tmpPath.c_str(), path);
 }
 
+// Returns how many symbols got a record, for the startup log.
 template <typename T>
-static void loadRecords(const char* path, uint32_t magic, T SymbolState::*field) {
-  if (!LittleFS.exists(path)) return;
+static int loadRecords(const char* path, uint32_t magic, T SymbolState::*field) {
+  if (!fileExists(path)) return 0;
   File f = LittleFS.open(path, "r");
-  if (!f) return;
+  if (!f) return 0;
   uint32_t fileMagic = 0;
   uint8_t count = 0;
   f.read((uint8_t*)&fileMagic, 4);
   f.read(&count, 1);
   if (fileMagic != magic) {
     f.close();
-    return;
+    return 0;
   }
+  int loaded = 0;
   for (int i = 0; i < count; i++) {
     char name[NAME_LEN];
     T record;
@@ -170,9 +191,11 @@ static void loadRecords(const char* path, uint32_t magic, T SymbolState::*field)
     if (s && record.valid) {
       s->*field = record;
       s->version++;
+      loaded++;
     }
   }
   f.close();
+  return loaded;
 }
 
 void storageSaveFundamentals() {
@@ -181,6 +204,10 @@ void storageSaveFundamentals() {
 
 void storageSaveProfiles() {
   saveRecords(PROFILES_PATH, MAGIC_PROFILES, &SymbolState::profile);
+}
+
+void storageSaveHistory() {
+  saveRecords(HISTORY_PATH, MAGIC_HISTORY, &SymbolState::history);
 }
 
 // ---------- public ----------
@@ -198,8 +225,11 @@ void storageUpdate(uint32_t nowMs) {
 
   if (!restored) {
     loadIntraday(lastSessionDay(now));
-    loadRecords(FUNDAMENTALS_PATH, MAGIC_FUNDAMENTALS, &SymbolState::fundamentals);
-    loadRecords(PROFILES_PATH, MAGIC_PROFILES, &SymbolState::profile);
+    int stats = loadRecords(FUNDAMENTALS_PATH, MAGIC_FUNDAMENTALS, &SymbolState::fundamentals);
+    int names = loadRecords(PROFILES_PATH, MAGIC_PROFILES, &SymbolState::profile);
+    int history = loadRecords(HISTORY_PATH, MAGIC_HISTORY, &SymbolState::history);
+    Serial.printf("storage: restored names %d, stats %d, history %d (of %d stocks)\n", names, stats,
+                  history, cfg::NUM_TICKERS);
     restored = true;
   }
 
