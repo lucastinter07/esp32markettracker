@@ -1,6 +1,7 @@
 #include "hal/buzzer.h"
 #include <Arduino.h>
 #include "config.h"
+#include "data/settings.h"
 
 static bool muted = false;
 
@@ -14,11 +15,11 @@ void buzzerInit() {
 
 // tone() with a duration returns immediately; the core plays queued tones in order.
 void buzzerClick() {
-  if (!muted) tone(cfg::BUZZER_PIN, 2000, 15);
+  if (!muted && settings().clickSounds) tone(cfg::BUZZER_PIN, 2000, 15);
 }
 
 void buzzerChime() {
-  if (muted) return;
+  if (muted || !settings().chime) return;
   tone(cfg::BUZZER_PIN, 880, 120);
   tone(cfg::BUZZER_PIN, 1320, 180);
 }

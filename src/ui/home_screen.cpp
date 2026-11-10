@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include "config.h"
 #include "data/market_data.h"
+#include "data/watchlist.h"
 #include "hal/display.h"
 #include "net/quote_client.h"
 #include "net/time_sync.h"
@@ -114,7 +115,7 @@ static void drawIndex(int i) {
   gfx.setTextSize(1);
   gfx.setTextColor(theme::LABEL, theme::PANEL);
   gfx.setCursor(x + 10, y + 8);
-  snprintf(buf, sizeof(buf), "%s (%s)", cfg::INDEX_LABELS[i], s.symbol);
+  snprintf(buf, sizeof(buf), "%s (%s)", watchlistIndexLabel(i), s.symbol);
   gfx.print(buf);
   if (i == cfg::NUM_INDEXES - 1) {
     const char* label = feedLabel();
@@ -181,6 +182,10 @@ int rowAt(int16_t x, int16_t y) {
   if (y < theme::ROW_Y0) return -1;
   int row = (y - theme::ROW_Y0) / theme::ROW_H;
   return row < cfg::NUM_TICKERS ? row : -1;
+}
+
+bool isMenuTap(int16_t x, int16_t y) {
+  return x < 40 && y < theme::HEADER_H;   // a bit wider than the icon, easier to hit
 }
 
 }  // namespace home

@@ -33,22 +33,30 @@ constexpr uint8_t BTN_NEXT   = 14;
 constexpr uint8_t BTN_SELECT = 6;
 constexpr uint8_t BTN_BACK   = 21;
 constexpr uint32_t DEBOUNCE_MS = 25;
+constexpr uint32_t LONG_PRESS_MS = 2000;   // holding BACK this long opens Settings
 
 // ---- Buzzer (passive, driven with tone()) ----
 constexpr uint8_t BUZZER_PIN = 18;
 
 // ---- Screen cycle ----
 constexpr uint32_t HOME_DURATION_MS   = 30000;
+constexpr uint32_t SPLASH_MIN_MS      = 2500;    // startup screen shows at least this long
+constexpr uint32_t SPLASH_MAX_MS      = 20000;   // ...and at most this long, even if prices haven't arrived
 constexpr uint32_t DETAIL_DURATION_MS = 20000;   // auto mode: chart page, then stats page halfway
 
 // ---- Watchlist ----
+// These are the defaults: the first boot (and "Reset to defaults") uses them. Changes made
+// on the device (Settings > Watchlist) are saved in NVS and win over these after that.
 constexpr int NUM_TICKERS = 5;
 constexpr const char* TICKERS[NUM_TICKERS] = {"NVDA", "AMD", "INTC", "VRT", "AAPL"};
 
-// Index ETFs stand in for the indexes (free tier has no raw index data).
+// Index ETFs stand in for the indexes (free tier has no raw index data). Each index slot
+// can show one of these; the defaults are the first two.
 constexpr int NUM_INDEXES = 2;
-constexpr const char* INDEX_SYMBOLS[NUM_INDEXES] = {"SPY", "QQQ"};
-constexpr const char* INDEX_LABELS[NUM_INDEXES]  = {"S&P 500", "NASDAQ"};
+constexpr int NUM_INDEX_CHOICES = 4;
+constexpr const char* INDEX_CHOICE_SYMBOLS[NUM_INDEX_CHOICES] = {"SPY", "QQQ", "DIA", "IWM"};
+constexpr const char* INDEX_CHOICE_LABELS[NUM_INDEX_CHOICES]  = {"S&P 500", "NASDAQ", "DOW", "RUSSELL 2000"};
+constexpr uint8_t DEFAULT_INDEX_CHOICES[NUM_INDEXES] = {0, 1};   // SPY, QQQ
 
 // true: made-up prices from data/fake_feed (no network needed), labelled DEMO PRICES.
 // false: live prices from Finnhub (net/quote_client), using the key in .env.

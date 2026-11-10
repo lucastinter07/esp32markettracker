@@ -339,6 +339,13 @@ void wifiUpdate(uint32_t nowMs) {
   }
 }
 
+void wifiOpenSetup(uint32_t nowMs) {
+  if (state == WifiState::Setup) return;
+  // The saved network stays saved: it's only replaced if a new one is entered, and
+  // SELECT on the setup screen reconnects to it.
+  startSetup(nowMs, "");
+}
+
 void wifiRetry(uint32_t nowMs) {
   if (state != WifiState::Setup || savedSsid.length() == 0) return;
   stopSetup();

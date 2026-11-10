@@ -15,6 +15,7 @@ enum class WifiState : uint8_t {
 void wifiInit(bool forceSetup, uint32_t nowMs);
 void wifiUpdate(uint32_t nowMs);   // call every loop
 void wifiRetry(uint32_t nowMs);    // from setup mode: try the saved network again
+void wifiOpenSetup(uint32_t nowMs);   // from Settings: start the setup hotspot (keeps the saved network)
 
 WifiState wifiState();
 const char* wifiSetupName();       // hotspot name, e.g. "MarketTracker-A1B2"

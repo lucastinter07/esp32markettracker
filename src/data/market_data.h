@@ -16,5 +16,16 @@ SymbolState& symbolByIndex(int i);   // 0 .. NUM_SYMBOLS-1, stocks then index ET
 // marketOpen is passed in so a screen can check it once and reuse it for every row.
 bool isStale(const SymbolState& s, uint32_t nowMs, bool marketOpen);
 
+// Changing a watchlist slot (main loop only): clears that symbol's data and gives it the
+// new name. Bumps the slot's generation, so results the quote task fetched for the old
+// symbol can be recognised and dropped.
+void marketDataReplace(int i, const char* symbol);
+
+// For the quote task (other core): copies symbol i's name into out (SYMBOL_MAX_LEN + 1
+// bytes) and returns its generation, both read together under a lock so a rename in the
+// middle can't produce a half-old, half-new name.
+uint8_t symbolSnapshot(int i, char* out);
+uint8_t symbolGeneration(int i);
+
 // Only the main loop changes market data. The Finnhub client runs in its own task but
 // sends its results through a queue (net/quote_client), so no locking is needed.

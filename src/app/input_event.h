@@ -9,7 +9,8 @@ enum class InputType : uint8_t {
   Next,
   Select,
   Back,
-  Tap,   // touch: x/y hold the screen position, and the active screen decides what was hit
+  LongBack,   // BACK held for 2 s: opens Settings
+  Tap,        // touch: x/y hold the screen position, and the active screen decides what was hit
 };
 
 struct InputEvent {

@@ -11,6 +11,8 @@
 // couple of minutes after the close for final prices) and then stays idle.
 #pragma once
 #include <stdint.h>
+#include "symbol_state.h"
+#include "symbol_text.h"
 
 enum class FeedStatus : uint8_t {
   Starting,      // waiting for Wi-Fi / first quote
@@ -28,3 +30,18 @@ FeedStatus quoteFeedStatus();
 
 // Short label for the Home screen, or nullptr when everything is fine.
 const char* quoteFeedProblem();
+
+// A watchlist slot got a new ticker (called by data/watchlist after the data was reset):
+// prices it next and downloads its names, stats, earnings and history.
+void quoteClientSymbolChanged(int i);
+
+// Checking a ticker typed in the watchlist editor: Finnhub quote + company name.
+enum class LookupStatus : uint8_t { Found, NotFound, Failed };
+struct SymbolLookup {
+  char symbol[SYMBOL_MAX_LEN + 1];
+  LookupStatus status;
+  Quote quote;
+  Profile profile;   // valid = false for ETFs (no profile)
+};
+void quoteClientLookup(const char* symbol);       // starts a check (replaces any pending one)
+bool quoteClientLookupResult(SymbolLookup& out);  // true once an answer is ready

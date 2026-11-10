@@ -106,12 +106,16 @@ void statusBarDraw(bool force) {
   DFRobot_GDL& gfx = display();
   gfx.fillRect(0, 0, cfg::SCREEN_W, theme::HEADER_H, theme::PANEL);
 
+  // Far left: a menu icon (three short lines). Tapping it opens Settings.
+  for (int i = 0; i < 3; i++) gfx.fillRect(8, 9 + i * 5, 16, 2, theme::LABEL);
+
   // Left: phase in large text, detail in small text right after it
+  const int16_t phaseX = 32;
   gfx.setTextSize(2);
   gfx.setTextColor(c.phaseColor, theme::PANEL);
-  gfx.setCursor(10, 7);
+  gfx.setCursor(phaseX, 7);
   gfx.print(c.phase);
-  int16_t detailX = 10 + strlen(c.phase) * 12 + 8;
+  int16_t detailX = phaseX + strlen(c.phase) * 12 + 8;
   gfx.setTextSize(1);
   gfx.setTextColor(theme::LABEL, theme::PANEL);
   gfx.setCursor(detailX, 11);

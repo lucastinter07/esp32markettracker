@@ -71,6 +71,10 @@ struct SymbolState {
 
   void applyProfile(const Profile& p, int32_t today);
 
+  // Forgets everything about the current symbol (used when a watchlist slot gets a new
+  // ticker). The symbol itself is set by the caller; version still goes up, so screens redraw.
+  void clearData();
+
   float peRatio() const;      // price / EPS; 0 when not available or earnings are negative
   double marketCap() const;   // dollars; 0 when not available
 };

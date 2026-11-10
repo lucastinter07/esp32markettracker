@@ -5,16 +5,63 @@
 #include "data/market_data.h"
 #include "hal/buzzer.h"
 #include "hal/display.h"
+#include "net/quote_client.h"
+#include "net/time_sync.h"
 #include "net/wifi_manager.h"
 #include "ui/detail_screen.h"
 #include "ui/home_screen.h"
+#include "ui/settings_screen.h"
+#include "ui/splash_screen.h"
+#include "ui/watchlist_screen.h"
 #include "ui/setup_screen.h"
+
+static const uint32_t SETTINGS_IDLE_MS = 60000;   // Settings returns to Home after 60 s untouched
 
 static int wrap(int i) {
   return (i + cfg::NUM_TICKERS) % cfg::NUM_TICKERS;
 }
 
 void ScreenManager::begin(uint32_t nowMs) {
+  mode_ = Mode::Splash;
+  modeStartMs_ = nowMs;
+  splash::drawFull();
+  Serial.println("screen: splash");
+}
+
+// Shows what startup is doing and leaves once every symbol has a price, Wi-Fi setup is
+// needed, or the feed reports a problem (after SPLASH_MIN_MS), or at SPLASH_MAX_MS regardless.
+void ScreenManager::updateSplash(uint32_t nowMs) {
+  uint32_t elapsed = nowMs - modeStartMs_;
+  int priced = 0;
+  for (int i = 0; i < NUM_SYMBOLS; i++) {
+    if (symbolByIndex(i).hasData) priced++;
+  }
+  WifiState wifi = wifiState();
+  EtTime now;
+  bool problem = quoteFeedProblem() != nullptr && quoteFeedStatus() != FeedStatus::Starting;
+
+  char status[40];
+  int percent;
+  if (wifi == WifiState::Setup) {
+    snprintf(status, sizeof(status), "Wi-Fi setup needed");
+    percent = 100;
+  } else if (priced == 0 && wifi == WifiState::Connecting) {
+    snprintf(status, sizeof(status), "Connecting to Wi-Fi...");
+    percent = min<uint32_t>(elapsed * 25 / cfg::SPLASH_MAX_MS, 25);
+  } else if (priced == 0 && !timeNowET(now)) {
+    snprintf(status, sizeof(status), "Syncing clock...");
+    percent = 30;
+  } else {
+    snprintf(status, sizeof(status), "Loading prices %d/%d", priced, NUM_SYMBOLS);
+    percent = 35 + 65 * priced / NUM_SYMBOLS;
+  }
+  splash::update(status, percent);
+
+  bool done = priced == NUM_SYMBOLS || wifi == WifiState::Setup || problem;
+  if ((done && elapsed >= cfg::SPLASH_MIN_MS) || elapsed >= cfg::SPLASH_MAX_MS) finishSplash(nowMs);
+}
+
+void ScreenManager::finishSplash(uint32_t nowMs) {
   if (wifiState() == WifiState::Setup) showSetup();
   else showHome(nowMs);
 }
@@ -23,6 +70,14 @@ void ScreenManager::showSetup() {
   mode_ = Mode::Setup;
   wifisetup::drawFull();
   Serial.println("screen: wifi setup");
+}
+
+void ScreenManager::showSettings(uint32_t nowMs, int row) {
+  mode_ = Mode::Settings;
+  modeStartMs_ = nowMs;
+  settingsRow_ = row;
+  settingsui::drawFull(settingsRow_);
+  Serial.println("screen: settings");
 }
 
 void ScreenManager::showHome(uint32_t nowMs) {
@@ -43,6 +98,11 @@ void ScreenManager::showDetail(int ticker, bool pinned, uint32_t nowMs) {
 void ScreenManager::update(uint32_t nowMs) {
   InputEvent ev;
   while (inputGet(ev)) handleInput(ev, nowMs);
+
+  if (mode_ == Mode::Splash) {
+    updateSplash(nowMs);   // the Wi-Fi setup takeover below waits until the splash is done
+    return;
+  }
 
   // Wi-Fi setup takes over the screen until it finishes or the user presses BACK.
   bool inSetup = wifiState() == WifiState::Setup;
@@ -89,6 +149,20 @@ void ScreenManager::update(uint32_t nowMs) {
 
     case Mode::Setup:
       break;   // static instructions; the Wi-Fi manager runs the hotspot
+
+    case Mode::Splash:
+      break;   // handled above
+
+    case Mode::Settings:
+      if (elapsed >= SETTINGS_IDLE_MS) showHome(nowMs);
+      else settingsui::update(settingsRow_);
+      break;
+
+    case Mode::Watchlist:
+      if (watchui::busy()) modeStartMs_ = nowMs;   // waiting on a ticker check is not idle
+      if (elapsed >= SETTINGS_IDLE_MS) showHome(nowMs);
+      else watchui::update(nowMs);
+      break;
   }
 }
 
@@ -101,6 +175,11 @@ void ScreenManager::handleInput(const InputEvent& ev, uint32_t nowMs) {
 
 void ScreenManager::handleInputAction(const InputEvent& ev, uint32_t nowMs) {
 
+  if (mode_ == Mode::Splash) {
+    finishSplash(nowMs);   // any input skips the startup screen
+    return;
+  }
+
   if (mode_ == Mode::Setup) {
     if (ev.type == InputType::Select) {
       wifiRetry(nowMs);   // the screen switches to Home once the state leaves Setup
@@ -108,6 +187,23 @@ void ScreenManager::handleInputAction(const InputEvent& ev, uint32_t nowMs) {
       setupDismissed_ = true;   // the hotspot keeps running in the background
       showHome(nowMs);
     }
+    return;
+  }
+
+  // Holding BACK opens Settings from any other screen.
+  if (ev.type == InputType::LongBack) {
+    if (mode_ != Mode::Settings) showSettings(nowMs);
+    return;
+  }
+
+  if (mode_ == Mode::Settings) {
+    handleSettingsInput(ev, nowMs);
+    return;
+  }
+
+  if (mode_ == Mode::Watchlist) {
+    modeStartMs_ = nowMs;
+    if (watchui::handle(ev, nowMs) == watchui::Result::Exit) showSettings(nowMs, settingsui::watchlistRow());
     return;
   }
 
@@ -126,14 +222,17 @@ void ScreenManager::handleInputAction(const InputEvent& ev, uint32_t nowMs) {
           if (row >= 0) Serial.printf("tap %d,%d -> row %d (%s)\n", ev.x, ev.y, row, stock(row).symbol);
           else Serial.printf("tap %d,%d -> nothing (header or index bar)\n", ev.x, ev.y);
         }
-        if (row >= 0) {
+        if (home::isMenuTap(ev.x, ev.y)) {
+          showSettings(nowMs);
+        } else if (row >= 0) {
           highlight_ = row;
           page_ = detail::Page::Day;
           showDetail(row, true, nowMs);
         }
         break;
       }
-      case InputType::Back: break;
+      case InputType::Back:
+      case InputType::LongBack: break;
     }
     return;
   }
@@ -159,6 +258,43 @@ void ScreenManager::handleInputAction(const InputEvent& ev, uint32_t nowMs) {
   } else {
     pinIfAuto();   // any other touch while auto-showing: the user is looking, so pin it
   }
+}
+
+void ScreenManager::handleSettingsInput(const InputEvent& ev, uint32_t nowMs) {
+  modeStartMs_ = nowMs;   // any input restarts the idle timer
+  int count = settingsui::rowCount();
+  int activateRow = -1;
+  switch (ev.type) {
+    case InputType::Prev:   settingsRow_ = (settingsRow_ + count - 1) % count; break;
+    case InputType::Next:   settingsRow_ = (settingsRow_ + 1) % count; break;
+    case InputType::Select: activateRow = settingsRow_; break;
+    case InputType::Back:   showHome(nowMs); return;
+    case InputType::LongBack: break;
+    case InputType::Tap:
+      if (settingsui::isBackTap(ev.x, ev.y)) {
+        showHome(nowMs);
+        return;
+      }
+      activateRow = settingsui::rowAt(ev.x, ev.y);
+      if (activateRow >= 0 && activateRow != settingsRow_) {
+        settingsRow_ = activateRow;
+        settingsui::update(settingsRow_);   // move the highlight first (cancels a pending confirm)
+      }
+      break;
+  }
+  settingsui::Action action = activateRow >= 0 ? settingsui::activate(activateRow, nowMs) : settingsui::Action::None;
+  if (action == settingsui::Action::StartWifiSetup) {
+    wifiOpenSetup(nowMs);   // update() switches to the setup screen once the hotspot is up
+    return;
+  }
+  if (action == settingsui::Action::OpenWatchlist) {
+    mode_ = Mode::Watchlist;
+    modeStartMs_ = nowMs;
+    watchui::open();
+    Serial.println("screen: watchlist");
+    return;
+  }
+  settingsui::update(settingsRow_);
 }
 
 void ScreenManager::pinIfAuto() {

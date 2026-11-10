@@ -6,6 +6,9 @@
 #include "config.h"
 #include "data/fake_feed.h"
 #include "data/market_data.h"
+#include "data/settings.h"
+#include "data/watchlist.h"
+#include "hal/backlight.h"
 #include "hal/buttons.h"
 #include "hal/buzzer.h"
 #include "hal/display.h"
@@ -23,9 +26,13 @@ void setup() {
   uint32_t now = millis();
 
   inputInit();
+  settingsInit();   // first: the buzzer and backlight read their settings
   displayInit();
+  backlightInit();
+  backlightSet(settings().brightness);
   buttonsInit();
   buzzerInit();
+  watchlistInit();   // before marketDataInit(): it names the symbols
   marketDataInit();
   storageInit();
   if (cfg::DEMO_PRICES) fakeFeedInit(now);

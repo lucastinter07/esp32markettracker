@@ -13,6 +13,7 @@
 #include "profile_parser.h"
 #include "quote_parser.h"
 #include "storage/history.h"
+#include "symbol_text.h"
 
 #ifndef FINNHUB_API_KEY
 #define FINNHUB_API_KEY ""   // normally set from .env by tools/load_env.py
@@ -38,6 +39,7 @@ enum class MsgKind : uint8_t { Quote, NewSession, Metrics, Profile, Earnings };
 struct QuoteMsg {
   MsgKind kind;
   int8_t index;        // symbol number
+  uint8_t gen;         // the slot's generation when fetched (a changed ticker drops old results)
   bool addToHistory;   // only quotes taken while the market is open become chart points
   uint32_t fetchedAt;  // unix seconds when the quote was fetched: its time on the chart
   int32_t day;         // for Metrics/Profile: day number of the fetch
@@ -51,6 +53,7 @@ struct QuoteMsg {
 // every quote message that big.
 struct HistoryMsg {
   int8_t index;
+  uint8_t gen;
   History history;
 };
 
@@ -59,6 +62,7 @@ struct HistoryMsg {
 static const int GAP_BARS = 80;   // a full session is 78 five-minute bars
 struct GapMsg {
   int8_t index;
+  uint8_t gen;
   uint8_t count;
   uint32_t sessionOpen;       // the session these bars belong to
   uint32_t sessionClose;
@@ -90,13 +94,21 @@ static void clearDue(volatile uint8_t& mask, int stockIndex) {
   taskEXIT_CRITICAL(&dueLock);
 }
 
+// Crosses a stock off only if its ticker hasn't changed since the download started:
+// otherwise the bit now means "the NEW ticker needs this" and must stay set.
+static void clearDueIf(volatile uint8_t& mask, int stockIndex, uint8_t gen) {
+  taskENTER_CRITICAL(&dueLock);
+  if (symbolGeneration(stockIndex) == gen) mask &= (uint8_t)~(1u << stockIndex);
+  taskEXIT_CRITICAL(&dueLock);
+}
+
 static bool isDue(uint8_t mask, int stockIndex) {
   return (mask >> stockIndex) & 1u;
 }
 
-// The first stock with its bit set, or -1.
-static int firstDue(uint8_t mask) {
-  for (int i = 0; i < cfg::NUM_TICKERS; i++) {
+// The first stock (or symbol, with count = NUM_SYMBOLS) with its bit set, or -1.
+static int firstDue(uint8_t mask, int count = cfg::NUM_TICKERS) {
+  for (int i = 0; i < count; i++) {
     if (isDue(mask, i)) return i;
   }
   return -1;
@@ -106,6 +118,21 @@ static volatile uint8_t metricsDue = 0;    // company stats
 static volatile uint8_t profilesDue = 0;   // company names
 static volatile uint8_t earningsDue = 0;   // earnings dates
 static volatile uint8_t historyDue = 0;    // Twelve Data backfill
+static volatile uint8_t quoteDue = 0;      // a slot got a new ticker: price it next (all symbols)
+static bool recheckRequested = false;      // main loop: re-run the "what's missing" checks now
+
+// Symbol check for the watchlist editor: the main loop puts a symbol here and signals the
+// task, which answers through lookupQueue between (or during the pauses of) its other work.
+static char lookupSymbol[SYMBOL_MAX_LEN + 1];
+static volatile bool lookupPending = false;
+static SemaphoreHandle_t lookupSignal = nullptr;
+static QueueHandle_t lookupQueue = nullptr;
+
+// The task's connections. File-level (not inside quoteTask) so the lookup can use them.
+static WiFiClientSecure tls;     // Finnhub, kept open between requests
+static HTTPClient http;
+static WiFiClientSecure tdTls;   // Twelve Data
+static HTTPClient tdHttp;
 static int quoteFailures = 0;              // in a row; QUOTE ERROR shows only after 3
 
 enum class Fetch { Ok, UnknownSymbol, BadKey, RateLimited, Failed };
@@ -200,6 +227,46 @@ static Fetch fetchMetrics(WiFiClientSecure& tls, const char* symbol, MetricData&
   return result;
 }
 
+// Answers a pending symbol check (watchlist editor): quote first (an unknown symbol has
+// no price), then the company name (ETFs have none, which is fine).
+static void serviceLookup() {
+  char symbol[SYMBOL_MAX_LEN + 1];
+  taskENTER_CRITICAL(&dueLock);
+  bool pending = lookupPending;
+  lookupPending = false;
+  memcpy(symbol, lookupSymbol, sizeof(symbol));
+  taskEXIT_CRITICAL(&dueLock);
+  if (!pending) return;
+
+  static SymbolLookup result;   // static: keeps it off the task's stack
+  result = SymbolLookup();
+  memcpy(result.symbol, symbol, sizeof(symbol));
+  Fetch r = fetchQuote(http, tls, symbol, result.quote);
+  if (r == Fetch::Ok) {
+    result.status = LookupStatus::Found;
+    if (fetchProfile(http, tls, symbol, result.profile) != Fetch::Ok) result.profile = Profile();
+  } else {
+    result.status = r == Fetch::UnknownSymbol ? LookupStatus::NotFound : LookupStatus::Failed;
+  }
+  Serial.printf("quotes: lookup %s -> %s\n", symbol,
+                result.status == LookupStatus::Found      ? "found"
+                : result.status == LookupStatus::NotFound ? "not found"
+                                                          : "failed");
+  xQueueOverwrite(lookupQueue, &result);
+}
+
+// Like vTaskDelay, but wakes up to answer a symbol check straight away, so the editor
+// doesn't have to wait for a long pause between downloads to end.
+static void taskWait(uint32_t ms) {
+  uint32_t start = millis();
+  for (;;) {
+    uint32_t waited = millis() - start;
+    if (waited >= ms) return;
+    if (xSemaphoreTake(lookupSignal, pdMS_TO_TICKS(ms - waited)) != pdTRUE) return;
+    if (WiFi.isConnected()) serviceLookup();
+  }
+}
+
 static void sendToMainLoop(const QuoteMsg& msg) {
   xQueueSend(queue, &msg, portMAX_DELAY);   // waits if the main loop is behind
 }
@@ -213,10 +280,12 @@ static void fetchDueMetrics(WiFiClientSecure& tls, int32_t today) {
     msg.kind = MsgKind::Metrics;
     msg.index = (int8_t)i;
     msg.day = today;
-    Fetch r = fetchMetrics(tls, symbolByIndex(i).symbol, msg.metrics);
+    char symbol[SYMBOL_MAX_LEN + 1];
+    msg.gen = symbolSnapshot(i, symbol);
+    Fetch r = fetchMetrics(tls, symbol, msg.metrics);
     if (r == Fetch::Ok) sendToMainLoop(msg);
-    if (r == Fetch::Ok || r == Fetch::UnknownSymbol) clearDue(metricsDue, i);
-    vTaskDelay(pdMS_TO_TICKS(CLOSED_PASS_GAP_MS));
+    if (r == Fetch::Ok || r == Fetch::UnknownSymbol) clearDueIf(metricsDue, i, msg.gen);
+    taskWait(CLOSED_PASS_GAP_MS);
   }
   Serial.printf("quotes: company stats %s\n", metricsDue == 0 ? "updated" : "incomplete, will retry");
 }
@@ -229,10 +298,12 @@ static void fetchDueProfiles(HTTPClient& http, WiFiClientSecure& tls, int32_t to
     msg.kind = MsgKind::Profile;
     msg.index = (int8_t)i;
     msg.day = today;
-    Fetch r = fetchProfile(http, tls, symbolByIndex(i).symbol, msg.profile);
+    char symbol[SYMBOL_MAX_LEN + 1];
+    msg.gen = symbolSnapshot(i, symbol);
+    Fetch r = fetchProfile(http, tls, symbol, msg.profile);
     if (r == Fetch::Ok) sendToMainLoop(msg);
-    if (r == Fetch::Ok || r == Fetch::UnknownSymbol) clearDue(profilesDue, i);
-    vTaskDelay(pdMS_TO_TICKS(CLOSED_PASS_GAP_MS));
+    if (r == Fetch::Ok || r == Fetch::UnknownSymbol) clearDueIf(profilesDue, i, msg.gen);
+    taskWait(CLOSED_PASS_GAP_MS);
   }
   Serial.printf("quotes: company names %s\n", profilesDue == 0 ? "updated" : "incomplete, will retry");
 }
@@ -269,11 +340,13 @@ static void fetchDueEarnings(HTTPClient& http, WiFiClientSecure& tls, int32_t to
     msg.kind = MsgKind::Earnings;
     msg.index = (int8_t)i;
     msg.day = today;
-    if (fetchEarnings(http, tls, symbolByIndex(i).symbol, today, msg.earnings) == Fetch::Ok) {
+    char symbol[SYMBOL_MAX_LEN + 1];
+    msg.gen = symbolSnapshot(i, symbol);
+    if (fetchEarnings(http, tls, symbol, today, msg.earnings) == Fetch::Ok) {
       sendToMainLoop(msg);
-      clearDue(earningsDue, i);
+      clearDueIf(earningsDue, i, msg.gen);
     }
-    vTaskDelay(pdMS_TO_TICKS(CLOSED_PASS_GAP_MS));
+    taskWait(CLOSED_PASS_GAP_MS);
   }
   Serial.println(earningsDue == 0 ? "quotes: earnings dates updated" : "quotes: earnings dates incomplete, will retry");
 }
@@ -310,7 +383,7 @@ static Fetch fetchHistory(HTTPClient& http, WiFiClientSecure& tls, const char* s
   Fetch r = fetchTwelveData(http, tls, symbol, "1day", HISTORY_DAYS - 2, body);
   if (r != Fetch::Ok) return r;
   if (!parseDailyCsv(body.c_str(), out)) return Fetch::UnknownSymbol;
-  vTaskDelay(pdMS_TO_TICKS(TD_GAP_MS));
+  taskWait(TD_GAP_MS);
 
   r = fetchTwelveData(http, tls, symbol, "30min", HISTORY_BARS, body);
   if (r != Fetch::Ok) return r;
@@ -341,16 +414,11 @@ static Fetch fetchGap(HTTPClient& http, WiFiClientSecure& tls, const char* symbo
 
 // Runs forever in its own FreeRTOS task.
 static void quoteTask(void*) {
-  // static: these objects are large, so keep them off this task's stack
-  static WiFiClientSecure tls;
-  static HTTPClient http;
   tls.setCACert(FINNHUB_ROOT_CAS);   // only trust Finnhub's real certificate
   http.setReuse(true);
   http.setTimeout(8000);
   // A second connection for Twelve Data, so switching between the two services doesn't
   // tear down the kept-open Finnhub connection. Its certificate chain uses the same roots.
-  static WiFiClientSecure tdTls;
-  static HTTPClient tdHttp;
   tdTls.setCACert(FINNHUB_ROOT_CAS);
   tdHttp.setReuse(true);
   tdHttp.setTimeout(10000);
@@ -375,6 +443,10 @@ static void quoteTask(void*) {
     if (!WiFi.isConnected()) {
       vTaskDelay(pdMS_TO_TICKS(1000));
       continue;
+    }
+    if (lookupPending) {
+      xSemaphoreTake(lookupSignal, 0);   // consume the signal; the request is handled here
+      serviceLookup();
     }
 
     EtTime now;
@@ -421,15 +493,17 @@ static void quoteTask(void*) {
       static GapMsg gmsg;   // static: ~650 bytes
       int i = firstDue(gapDue);
       gmsg.index = (int8_t)i;
-      Fetch r = fetchGap(tdHttp, tdTls, symbolByIndex(i).symbol, gapSessionOpen, gapSessionClose, gmsg);
+      char symbol[SYMBOL_MAX_LEN + 1];
+      gmsg.gen = symbolSnapshot(i, symbol);
+      Fetch r = fetchGap(tdHttp, tdTls, symbol, gapSessionOpen, gapSessionClose, gmsg);
       if (r == Fetch::Ok) xQueueSend(gapQueue, &gmsg, portMAX_DELAY);
-      clearDue(gapDue, i);   // one try per stock: if it fails, the chart just starts at boot time
+      clearDueIf(gapDue, i, gmsg.gen);   // one try per stock: if it fails, the chart just starts at boot time
       if (gapDue == 0) {
         Serial.println("quotes: filled in today's earlier chart");
         if (!historyDue) tdTls.stop();   // free the Twelve Data connection's memory
       }
       historyJustRan = true;
-      vTaskDelay(pdMS_TO_TICKS(TD_GAP_MS));
+      taskWait(TD_GAP_MS);
       continue;
     }
 
@@ -439,10 +513,12 @@ static void quoteTask(void*) {
       HistoryMsg hmsg{};
       int i = firstDue(historyDue);
       hmsg.index = (int8_t)i;
-      Fetch r = fetchHistory(tdHttp, tdTls, symbolByIndex(i).symbol, lastCompletedSessionDay(now), hmsg.history);
+      char symbol[SYMBOL_MAX_LEN + 1];
+      hmsg.gen = symbolSnapshot(i, symbol);
+      Fetch r = fetchHistory(tdHttp, tdTls, symbol, lastCompletedSessionDay(now), hmsg.history);
       if (r == Fetch::Ok) xQueueSend(historyQueue, &hmsg, portMAX_DELAY);
       if (r == Fetch::Ok || r == Fetch::UnknownSymbol) {
-        clearDue(historyDue, i);
+        clearDueIf(historyDue, i, hmsg.gen);
       } else if (r == Fetch::BadKey) {
         Serial.println("quotes: Twelve Data rejected its API key (check .env, then rebuild)");
         historyDue = 0;
@@ -454,10 +530,19 @@ static void quoteTask(void*) {
         if (!gapDue) tdTls.stop();   // free the Twelve Data connection's memory
       }
       historyJustRan = true;
-      vTaskDelay(pdMS_TO_TICKS(TD_GAP_MS));
+      taskWait(TD_GAP_MS);
       continue;
     }
     historyJustRan = false;
+
+    // A slot just got a new ticker: price it before anything else. (Closed market: it's
+    // put back into the pass; open: it jumps the round-robin queue once.)
+    int priority = firstDue(quoteDue, NUM_SYMBOLS);
+    if (priority >= 0) {
+      clearDue(quoteDue, priority);
+      fetched[priority] = false;
+      if (!open) passAllowedAt = millis();
+    }
 
     if (!open) {
       int i = 0;
@@ -466,18 +551,21 @@ static void quoteTask(void*) {
       bool mustWait = (int32_t)(millis() - passAllowedAt) < 0;   // safe across millis() wrap
       if (passDone || mustWait) {
         if (passDone) status = FeedStatus::Idle;
-        vTaskDelay(pdMS_TO_TICKS(IDLE_CHECK_MS));
+        taskWait(IDLE_CHECK_MS);
         continue;
       }
       next = i;
     }
 
+    int target = open && priority >= 0 ? priority : next;
     QuoteMsg msg{};
     msg.kind = MsgKind::Quote;
-    msg.index = (int8_t)next;
+    msg.index = (int8_t)target;
     msg.addToHistory = open;
     msg.fetchedAt = (uint32_t)time(nullptr);
-    switch (fetchQuote(http, tls, symbolByIndex(next).symbol, msg.quote)) {
+    char symbol[SYMBOL_MAX_LEN + 1];
+    msg.gen = symbolSnapshot(target, symbol);
+    switch (fetchQuote(http, tls, symbol, msg.quote)) {
       case Fetch::Ok:
         sendToMainLoop(msg);
         if (status != FeedStatus::Live) Serial.println("quotes: live");
@@ -489,27 +577,28 @@ static void quoteTask(void*) {
       case Fetch::BadKey:
         status = FeedStatus::BadKey;
         Serial.println("quotes: Finnhub rejected the API key (check .env, then rebuild)");
-        vTaskDelay(pdMS_TO_TICKS(BAD_KEY_RETRY_MS));
+        taskWait(BAD_KEY_RETRY_MS);
         continue;
       case Fetch::RateLimited:
         status = FeedStatus::RateLimited;
         Serial.println("quotes: rate limited, pausing 60 s");
-        vTaskDelay(pdMS_TO_TICKS(RATE_LIMIT_BACKOFF_MS));
+        taskWait(RATE_LIMIT_BACKOFF_MS);
         continue;
       case Fetch::Failed:
         // A single hiccup (e.g. while a big download is running) shouldn't flash a red
         // notice; three in a row means something is actually wrong.
         if (++quoteFailures >= 3) status = FeedStatus::NetError;
-        vTaskDelay(pdMS_TO_TICKS(ERROR_RETRY_MS));
+        if (target != next) markDue(quoteDue, target);   // retry the new ticker first
+        taskWait(ERROR_RETRY_MS);
         continue;   // retry the same symbol
     }
 
     if (open) {
-      next = (next + 1) % NUM_SYMBOLS;
-      vTaskDelay(pdMS_TO_TICKS(openGapMs));
+      if (target == next) next = (next + 1) % NUM_SYMBOLS;
+      taskWait(openGapMs);
     } else {
       fetched[next] = true;
-      vTaskDelay(pdMS_TO_TICKS(CLOSED_PASS_GAP_MS));
+      taskWait(CLOSED_PASS_GAP_MS);
     }
   }
 }
@@ -525,7 +614,15 @@ static void requestDataIfDue(uint32_t nowMs) {
   static int32_t metricsCheckedDay = -1;
   static int32_t gapCheckedDay = -1;
   static int32_t historyCheckedFor = -1;
-  if (nowMs - lastCheckMs < METRICS_CHECK_MS) return;
+  if (recheckRequested && storageRestored()) {
+    // A ticker changed: forget which checks already ran today, so the new one's missing
+    // data is found now. Each check only marks stocks that lack something, so the
+    // unchanged stocks aren't downloaded again.
+    recheckRequested = false;
+    profilesCheckedDay = earningsCheckedDay = metricsCheckedDay = gapCheckedDay = historyCheckedFor = -1;
+  } else if (nowMs - lastCheckMs < METRICS_CHECK_MS) {
+    return;
+  }
   lastCheckMs = nowMs;
 
   EtTime now;
@@ -608,6 +705,8 @@ void quoteClientStart() {
   queue = xQueueCreate(16, sizeof(QuoteMsg));
   historyQueue = xQueueCreate(2, sizeof(HistoryMsg));
   gapQueue = xQueueCreate(1, sizeof(GapMsg));
+  lookupQueue = xQueueCreate(1, sizeof(SymbolLookup));
+  lookupSignal = xSemaphoreCreateBinary();
   // Core 0 runs the Wi-Fi driver; the Arduino loop (screen, touch) runs on core 1.
   xTaskCreatePinnedToCore(quoteTask, "quotes", TASK_STACK_BYTES, nullptr, 1, nullptr, 0);
 }
@@ -615,6 +714,8 @@ void quoteClientStart() {
 void quoteClientApply(uint32_t nowMs) {
   QuoteMsg msg;
   while (queue && xQueueReceive(queue, &msg, 0) == pdTRUE) {
+    // Fetched for a ticker that has since been replaced in that slot: ignore it.
+    if (msg.kind != MsgKind::NewSession && msg.gen != symbolGeneration(msg.index)) continue;
     switch (msg.kind) {
       case MsgKind::NewSession:
         for (int i = 0; i < NUM_SYMBOLS; i++) {
@@ -647,6 +748,7 @@ void quoteClientApply(uint32_t nowMs) {
   // static: a HistoryMsg is ~800 bytes, too big to put on the loop's stack every pass
   static HistoryMsg hmsg;
   while (historyQueue && xQueueReceive(historyQueue, &hmsg, 0) == pdTRUE) {
+    if (hmsg.gen != symbolGeneration(hmsg.index)) continue;
     SymbolState& s = symbolByIndex(hmsg.index);
     s.history = hmsg.history;
     s.version++;
@@ -655,6 +757,7 @@ void quoteClientApply(uint32_t nowMs) {
   static GapMsg gmsg;
   bool filled = false;
   while (gapQueue && xQueueReceive(gapQueue, &gmsg, 0) == pdTRUE) {
+    if (gmsg.gen != symbolGeneration(gmsg.index)) continue;
     SymbolState& s = symbolByIndex(gmsg.index);
     // Only that session's bars, and none within 2 min of a live point (live points win).
     s.intraday.fillGaps(gmsg.times, gmsg.prices, gmsg.count, gmsg.sessionOpen, gmsg.sessionClose, 120);
@@ -677,4 +780,23 @@ const char* quoteFeedProblem() {
     case FeedStatus::NetError:    return "QUOTE ERROR";
     default:                      return nullptr;
   }
+}
+
+void quoteClientSymbolChanged(int i) {
+  markDue(quoteDue, i);
+  recheckRequested = true;
+}
+
+void quoteClientLookup(const char* symbol) {
+  if (!lookupSignal) return;
+  taskENTER_CRITICAL(&dueLock);
+  strncpy(lookupSymbol, symbol, SYMBOL_MAX_LEN);
+  lookupSymbol[SYMBOL_MAX_LEN] = '\0';
+  lookupPending = true;
+  taskEXIT_CRITICAL(&dueLock);
+  xSemaphoreGive(lookupSignal);
+}
+
+bool quoteClientLookupResult(SymbolLookup& out) {
+  return lookupQueue && xQueueReceive(lookupQueue, &out, 0) == pdTRUE;
 }
