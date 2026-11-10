@@ -1,6 +1,7 @@
 // Everything the device knows about one symbol: the latest quote plus its stored history.
 #pragma once
 #include <stdint.h>
+#include "earnings.h"
 #include "history.h"
 #include "price_series.h"
 
@@ -52,6 +53,7 @@ struct SymbolState {
   Fundamentals fundamentals;
   Profile profile;
   History history;      // backfilled daily + 30-minute closes (Twelve Data)
+  Earnings earnings;    // next earnings report (Finnhub calendar)
   bool hasData = false;
   uint32_t lastUpdateMs = 0;
   // Goes up by one on every update. The UI compares it to the value it last drew,
@@ -59,8 +61,10 @@ struct SymbolState {
   uint32_t version = 0;
 
   // addToHistory = false updates the numbers without adding a chart point
-  // (used for quotes fetched while the market is closed).
-  void applyQuote(const Quote& q, uint32_t nowMs, bool addToHistory = true);
+  // (used for quotes fetched while the market is closed). pointTime is when the quote
+  // was fetched (unix seconds; 0 = unknown, e.g. demo prices). It's deliberately not
+  // the quote's last-trade time, which can still be yesterday's just after 9:30.
+  void applyQuote(const Quote& q, uint32_t nowMs, bool addToHistory = true, uint32_t pointTime = 0);
 
   // Stores freshly fetched metrics. Uses the current price to work out the share count.
   void applyMetrics(const MetricData& m, int32_t today);

@@ -19,15 +19,15 @@ static const int16_t BODY_Y = 110;      // page content starts here...
 static const int16_t BODY_H = 174;      // ...and ends at 283
 static const int16_t BAR_Y = 284, BAR_H = 4;   // auto-mode countdown, just above the tabs
 static const int16_t TAB_Y = 288, TAB_H = 32;
-static const int TAB_COUNT = 2;
-static const char* const TAB_NAMES[TAB_COUNT] = {"CHART", "STATS"};
+static const int TAB_COUNT = PAGE_COUNT;   // 96 px each
+static const char* const TAB_NAMES[TAB_COUNT] = {"1H", "1D", "5D", "1M", "STATS"};
 
 // Stats page: two columns of four rows, labels left, values right-aligned
 static const int16_t STAT_COL_X[2] = {10, 250};
 static const int16_t STAT_COL_W = 220;
-static const int16_t STAT_Y = 118, STAT_ROW_H = 34;
+static const int16_t STAT_Y = 118, STAT_ROW_H = 28;   // 6 rows: the last ends at y 274, above the tabs
 
-static Page page = Page::Chart;
+static Page page = Page::Day;
 static uint32_t drawnVersion = 0;
 static int drawnStaleMin = -1;   // minutes since the last quote when stale, -1 when fresh
 static int16_t drawnBarW = -1;
@@ -111,6 +111,42 @@ static void drawStat(int col, int row, const char* label, const char* value,
   gfx.print(padded);
 }
 
+// Full-width bottom row, e.g. "EARNINGS  Mon Feb 1, after close (84d)".
+static void drawEarningsRow(const SymbolState& s) {
+  static const char* const DAYS[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+  static const char* const MONTHS[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+  DFRobot_GDL& gfx = display();
+  const Earnings& e = s.earnings;
+  int16_t y = STAT_Y + 5 * STAT_ROW_H;
+  gfx.fillRect(0, y, cfg::SCREEN_W, 16, theme::BG);
+  gfx.setTextSize(2);
+  gfx.setTextColor(theme::STAT_LABEL, theme::BG);
+  gfx.setCursor(STAT_COL_X[0], y);
+  gfx.print("EARNINGS");
+
+  char buf[40];
+  EtTime now;
+  if (!e.valid || !timeNowET(now)) {
+    snprintf(buf, sizeof(buf), "--");
+  } else if (e.day == 0) {
+    snprintf(buf, sizeof(buf), "none scheduled yet");
+  } else {
+    int y2, m, d;
+    civilFromDay(e.day, y2, m, d);
+    int daysAway = e.day - dayNumber(now.year, now.month, now.day);
+    const char* when = earningsTimeText(e);
+    char away[12];
+    if (daysAway == 0) snprintf(away, sizeof(away), "TODAY");
+    else snprintf(away, sizeof(away), "%dd", daysAway);
+    snprintf(buf, sizeof(buf), "%s %s %d%s%s (%s)", DAYS[weekdayOf(y2, m, d)], MONTHS[m - 1], d,
+             when[0] ? ", " : "", when, away);
+  }
+  gfx.setTextColor(theme::TEXT, theme::BG);
+  gfx.setCursor(STAT_COL_X[0] + 8 * 12 + 12, y);   // just after the 8-character label
+  gfx.print(buf);
+}
+
 // Change over the last `sessions` trading days, from the backfilled daily closes.
 // "--" until there's enough history (or without a Twelve Data key).
 static void drawChangeStat(int col, int row, const char* label, const SymbolState& s, int sessions) {
@@ -157,11 +193,22 @@ static void drawStatsPage(const SymbolState& s) {
   // Bottom row: change over 1 week (5 sessions) and 1 month (21 sessions)
   drawChangeStat(0, 4, "1 WEEK", s, 5);
   drawChangeStat(1, 4, "1 MONTH", s, 21);
+
+  drawEarningsRow(s);
+}
+
+// The chart pages map straight onto chart ranges (same order).
+static bool isChartPage() {
+  return page != Page::Stats;
+}
+
+static ChartRange pageRange() {
+  return (ChartRange)page;   // Hour, Day, FiveDay, Month line up with ChartRange
 }
 
 static void drawBody(const SymbolState& s) {
-  if (page == Page::Chart) {
-    drawDayChart(s, ChartBox{4, BODY_Y, cfg::SCREEN_W - 8, BODY_H});
+  if (isChartPage()) {
+    drawRangeChart(s, ChartBox{4, BODY_Y, cfg::SCREEN_W - 8, BODY_H}, pageRange());
   } else {
     drawStatsPage(s);
   }
@@ -171,7 +218,6 @@ static void drawBody(const SymbolState& s) {
 static void drawTop(const SymbolState& s) {
   DFRobot_GDL& gfx = display();
   const Quote& q = s.quote;
-  uint16_t chg = theme::changeColor(q.change);
   int staleMin = staleMinutes(s);
   char buf[48];
 
@@ -201,11 +247,22 @@ static void drawTop(const SymbolState& s) {
   int16_t priceEnd = 10 + (int16_t)strlen(buf) * 24;   // size 4 = 24 px per character
   // Clear everything right of the price (an older, longer price or change text).
   gfx.fillRect(priceEnd, PRICE_Y, cfg::SCREEN_W - priceEnd, 32, theme::BG);
+  // The change follows the selected chart range (1D, the day's change, on the stats page).
+  ChartRange range = isChartPage() ? pageRange() : ChartRange::Day;
+  float ref;
   gfx.setTextSize(2);
-  gfx.setTextColor(chg, theme::BG);
   gfx.setCursor(priceEnd + 16, PRICE_Y + 14);   // bottom-aligned with the big digits
-  snprintf(buf, sizeof(buf), "%+.2f (%+.2f%%)", q.change, q.changePct);
+  if (rangeReference(s, range, ref)) {
+    float delta = q.price - ref;
+    gfx.setTextColor(theme::changeColor(delta), theme::BG);
+    snprintf(buf, sizeof(buf), "%+.2f (%+.2f%%) ", delta, delta / ref * 100.0f);
+  } else {
+    gfx.setTextColor(theme::LABEL, theme::BG);
+    snprintf(buf, sizeof(buf), "-- ");   // not enough history for this range yet
+  }
   gfx.print(buf);
+  gfx.setTextColor(theme::LABEL, theme::BG);   // which range the change covers
+  gfx.print(rangeName(range));
 
   // Stale note under the price
   gfx.fillRect(10, PRICE_Y + 35, 260, 10, theme::BG);
@@ -234,6 +291,7 @@ void setPage(int ticker, Page newPage) {
   if (newPage == page) return;
   page = newPage;
   display().fillRect(0, BODY_Y, cfg::SCREEN_W, BODY_H, theme::BG);
+  drawTop(stock(ticker));   // the change under the price depends on the page
   drawBody(stock(ticker));
   drawTabs();
 }

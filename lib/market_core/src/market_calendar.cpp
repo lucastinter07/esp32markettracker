@@ -135,6 +135,10 @@ int32_t dayNumber(int year, int month, int day) {
   return daysFromCivil(year, month, day);
 }
 
+void civilFromDay(int32_t dayNum, int& year, int& month, int& day) {
+  civilFromDays(dayNum, year, month, day);
+}
+
 int32_t lastCompletedSessionDay(const EtTime& now) {
   int32_t today = daysFromCivil(now.year, now.month, now.day);
   int minuteOfDay = now.hour * 60 + now.minute;

@@ -43,7 +43,7 @@ constexpr uint32_t DETAIL_DURATION_MS = 20000;   // auto mode: chart page, then 
 
 // ---- Watchlist ----
 constexpr int NUM_TICKERS = 5;
-constexpr const char* TICKERS[NUM_TICKERS] = {"NEE", "AMD", "INTC", "VRT", "AAPL"};
+constexpr const char* TICKERS[NUM_TICKERS] = {"NVDA", "AMD", "INTC", "VRT", "AAPL"};
 
 // Index ETFs stand in for the indexes (free tier has no raw index data).
 constexpr int NUM_INDEXES = 2;

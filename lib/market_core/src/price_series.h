@@ -31,6 +31,20 @@ class PriceSeries {
   // True when every point has a real time, so a chart can use a time axis.
   bool hasTimes() const;
 
+  // The first point taken at or after `time`. False if there is none.
+  bool firstAtOrAfter(uint32_t time, float& price) const;
+
+  // True if the points leave a hole longer than `maxGap` seconds anywhere between `from`
+  // and `to`: at the start, between two points, or at the end. (Always true when empty.)
+  bool hasGap(uint32_t from, uint32_t to, uint32_t maxGap) const;
+
+  // Fills holes with extra points (e.g. 5-minute bars, oldest first). Only points between
+  // `from` and `to` are used, and only where no existing point is within `minSpacing`
+  // seconds, so the existing (live) points are kept and nothing is duplicated. The result
+  // stays in time order; if it's over CAPACITY, the oldest points are dropped.
+  void fillGaps(const uint32_t* times, const float* prices, int count, uint32_t from, uint32_t to,
+                uint32_t minSpacing);
+
  private:
   size_t slot(size_t i) const;   // array position of the i-th oldest point
 

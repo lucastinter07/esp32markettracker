@@ -37,6 +37,11 @@ void sessionBounds(uint32_t anyTime, uint32_t& openUnix, uint32_t& closeUnix) {
   closeUnix = openUnix + (early ? 210 : 390) * 60;   // 3.5 h or 6.5 h
 }
 
+void sessionBoundsForDay(int32_t day, uint32_t& openUnix, uint32_t& closeUnix) {
+  // 17:00 UTC is midday in New York (12:00 or 13:00), safely on the same date there.
+  sessionBounds((uint32_t)day * 86400u + 17 * 3600, openUnix, closeUnix);
+}
+
 bool marketIsOpenNow() {
   EtTime now;
   return timeNowET(now) && marketStatus(now).phase == MarketPhase::Open;

@@ -26,5 +26,5 @@ class ScreenManager {
   int nextAutoTicker_ = 0;     // ticker the auto cycle shows next
   int highlight_ = 0;          // selected row on Home (moved by PREV/NEXT)
   bool setupDismissed_ = false;  // BACK pressed on the Wi-Fi setup screen
-  detail::Page page_ = detail::Page::Chart;   // which Detail page is showing
+  detail::Page page_ = detail::Page::Day;   // which Detail page is showing
 };

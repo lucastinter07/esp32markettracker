@@ -61,7 +61,7 @@ void ScreenManager::update(uint32_t nowMs) {
   switch (mode_) {
     case Mode::Home:
       if (elapsed >= cfg::HOME_DURATION_MS) {
-        page_ = detail::Page::Chart;   // the auto cycle always starts on the chart
+        page_ = detail::Page::Day;   // the auto cycle always starts on the day chart
         showDetail(nextAutoTicker_, false, nowMs);
         nextAutoTicker_ = wrap(nextAutoTicker_ + 1);
       } else {
@@ -74,7 +74,7 @@ void ScreenManager::update(uint32_t nowMs) {
         showHome(nowMs);
       } else {
         // Halfway through, turn to the stats page.
-        if (page_ == detail::Page::Chart && elapsed >= cfg::DETAIL_DURATION_MS / 2) {
+        if (page_ != detail::Page::Stats && elapsed >= cfg::DETAIL_DURATION_MS / 2) {
           page_ = detail::Page::Stats;
           detail::setPage(ticker_, page_);
         }
@@ -117,7 +117,7 @@ void ScreenManager::handleInputAction(const InputEvent& ev, uint32_t nowMs) {
       case InputType::Prev:   highlight_ = wrap(highlight_ - 1); break;
       case InputType::Next:   highlight_ = wrap(highlight_ + 1); break;
       case InputType::Select:
-        page_ = detail::Page::Chart;
+        page_ = detail::Page::Day;
         showDetail(highlight_, true, nowMs);
         break;
       case InputType::Tap: {
@@ -128,7 +128,7 @@ void ScreenManager::handleInputAction(const InputEvent& ev, uint32_t nowMs) {
         }
         if (row >= 0) {
           highlight_ = row;
-          page_ = detail::Page::Chart;
+          page_ = detail::Page::Day;
           showDetail(row, true, nowMs);
         }
         break;
@@ -151,9 +151,9 @@ void ScreenManager::handleInputAction(const InputEvent& ev, uint32_t nowMs) {
     highlight_ = wrap(ticker_ + step);
     showDetail(highlight_, true, nowMs);   // keeps the current page
   } else if (tab >= 0 || ev.type == InputType::Select) {
-    // A tab picks its page; SELECT flips between the two.
+    // A tab picks its page; SELECT steps to the next one (1H > 1D > 5D > 1M > STATS > 1H).
     if (tab >= 0) page_ = (detail::Page)tab;
-    else page_ = page_ == detail::Page::Chart ? detail::Page::Stats : detail::Page::Chart;
+    else page_ = (detail::Page)(((int)page_ + 1) % detail::PAGE_COUNT);
     detail::setPage(ticker_, page_);
     pinIfAuto();
   } else {

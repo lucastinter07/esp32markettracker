@@ -17,3 +17,5 @@ bool storageRestored();               // true once saved data has been loaded (o
 void storageSaveFundamentals();       // call after new company stats arrive
 void storageSaveProfiles();           // call after new company names arrive
 void storageSaveHistory();            // call after backfilled history arrives
+void storageSaveEarnings();           // call after earnings dates arrive
+void storageSaveCharts();             // save the day charts now (e.g. after a gap-fill)

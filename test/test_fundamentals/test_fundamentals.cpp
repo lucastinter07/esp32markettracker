@@ -87,8 +87,21 @@ void test_52_week_range_widens_with_new_highs_and_lows() {
   TEST_ASSERT_EQUAL_FLOAT(150.0f, s.fundamentals.low52);
 }
 
+// Regression (2026-11-09): just after 9:30 a quote's last-trade time can still be
+// Friday's, which put the whole chart on Friday's session. Points must use the
+// fetch time instead.
+void test_chart_point_uses_fetch_time_not_trade_time() {
+  SymbolState s;
+  Quote q;
+  q.price = 100.0f;
+  q.timestamp = 1793995200;   // Friday's last trade
+  s.applyQuote(q, 0, true, 1794238200);   // fetched Monday 9:30
+  TEST_ASSERT_EQUAL_UINT32(1794238200u, s.intraday.timeAt(0));
+}
+
 int main() {
   UNITY_BEGIN();
+  RUN_TEST(test_chart_point_uses_fetch_time_not_trade_time);
   RUN_TEST(test_parses_metrics_and_skips_the_rest);
   RUN_TEST(test_rejects_unknown_symbol);
   RUN_TEST(test_pe_and_market_cap_follow_the_price);

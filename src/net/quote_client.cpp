@@ -34,15 +34,17 @@ static const uint32_t TD_GAP_MS = 8000;                // Twelve Data free plan:
 static const uint32_t HISTORY_RETRY_MS = 600000;       // after a failed history download
 
 // One message from the background task to the main loop.
-enum class MsgKind : uint8_t { Quote, NewSession, Metrics, Profile };
+enum class MsgKind : uint8_t { Quote, NewSession, Metrics, Profile, Earnings };
 struct QuoteMsg {
   MsgKind kind;
   int8_t index;        // symbol number
   bool addToHistory;   // only quotes taken while the market is open become chart points
+  uint32_t fetchedAt;  // unix seconds when the quote was fetched: its time on the chart
   int32_t day;         // for Metrics/Profile: day number of the fetch
   Quote quote;
   MetricData metrics;
   Profile profile;
+  Earnings earnings;
 };
 
 // History is ~800 bytes per stock, so it has its own small queue rather than making
@@ -52,19 +54,69 @@ struct HistoryMsg {
   History history;
 };
 
+// Gap-fill: 5-minute closes for the session the day chart shows, used to fill holes the
+// tracker missed while it was off (start, middle or end of the day).
+static const int GAP_BARS = 80;   // a full session is 78 five-minute bars
+struct GapMsg {
+  int8_t index;
+  uint8_t count;
+  uint32_t sessionOpen;       // the session these bars belong to
+  uint32_t sessionClose;
+  uint32_t times[GAP_BARS];   // bar END times, unix seconds
+  float prices[GAP_BARS];
+};
+static volatile uint32_t gapSessionOpen = 0;    // which session the main loop asked to fill
+static volatile uint32_t gapSessionClose = 0;
+
 static QueueHandle_t queue = nullptr;
 static QueueHandle_t historyQueue = nullptr;
+static QueueHandle_t gapQueue = nullptr;
+// "Which stocks need this?" as bits: bit i = stock i. The main loop sets bits, the task
+// clears them as each stock is done, so only stocks that are actually missing data (e.g. a
+// newly added ticker) are downloaded. Changes go through a lock because the two run on
+// different cores and could otherwise overwrite each other's update.
+static portMUX_TYPE dueLock = portMUX_INITIALIZER_UNLOCKED;
+static volatile uint8_t gapDue = 0;
+
+static void markDue(volatile uint8_t& mask, int stockIndex) {
+  taskENTER_CRITICAL(&dueLock);
+  mask |= (uint8_t)(1u << stockIndex);
+  taskEXIT_CRITICAL(&dueLock);
+}
+
+static void clearDue(volatile uint8_t& mask, int stockIndex) {
+  taskENTER_CRITICAL(&dueLock);
+  mask &= (uint8_t)~(1u << stockIndex);
+  taskEXIT_CRITICAL(&dueLock);
+}
+
+static bool isDue(uint8_t mask, int stockIndex) {
+  return (mask >> stockIndex) & 1u;
+}
+
+// The first stock with its bit set, or -1.
+static int firstDue(uint8_t mask) {
+  for (int i = 0; i < cfg::NUM_TICKERS; i++) {
+    if (isDue(mask, i)) return i;
+  }
+  return -1;
+}
 static volatile FeedStatus status = FeedStatus::Starting;   // written by the task, read by the UI
-static volatile bool metricsRequested = false;              // set by the main loop, cleared by the task
-static volatile bool profilesRequested = false;             // same, for company names
-static volatile bool historyRequested = false;              // same, for the Twelve Data backfill
+static volatile uint8_t metricsDue = 0;    // company stats
+static volatile uint8_t profilesDue = 0;   // company names
+static volatile uint8_t earningsDue = 0;   // earnings dates
+static volatile uint8_t historyDue = 0;    // Twelve Data backfill
+static int quoteFailures = 0;              // in a row; QUOTE ERROR shows only after 3
 
 enum class Fetch { Ok, UnknownSymbol, BadKey, RateLimited, Failed };
 
 static Fetch fromHttpCode(int code, const char* what, const char* symbol) {
   if (code == 401 || code == 403) return Fetch::BadKey;
   if (code == 429) return Fetch::RateLimited;
-  Serial.printf("quotes: %s %s: request failed (%d)\n", what, symbol, code);   // negative = connection error
+  // Negative codes are connection errors. Free memory helps tell a network problem from
+  // running out of RAM for another encrypted connection.
+  Serial.printf("quotes: %s %s: request failed (%d), free memory %u bytes\n", what, symbol, code,
+                (unsigned)ESP.getFreeHeap());
   return Fetch::Failed;
 }
 
@@ -152,40 +204,78 @@ static void sendToMainLoop(const QuoteMsg& msg) {
   xQueueSend(queue, &msg, portMAX_DELAY);   // waits if the main loop is behind
 }
 
-// Downloads company stats for every stock (not the index ETFs). Returns false if any
-// failed, so the task can try again later.
-static bool fetchAllMetrics(WiFiClientSecure& tls, int32_t today) {
-  bool allOk = true;
+// Downloads company stats for the stocks that need them (not the index ETFs). Each one
+// that succeeds (or that Finnhub has no stats for) is crossed off; the rest are retried later.
+static void fetchDueMetrics(WiFiClientSecure& tls, int32_t today) {
   for (int i = 0; i < cfg::NUM_TICKERS; i++) {
+    if (!isDue(metricsDue, i)) continue;
     QuoteMsg msg{};
     msg.kind = MsgKind::Metrics;
     msg.index = (int8_t)i;
     msg.day = today;
     Fetch r = fetchMetrics(tls, symbolByIndex(i).symbol, msg.metrics);
     if (r == Fetch::Ok) sendToMainLoop(msg);
-    else if (r != Fetch::UnknownSymbol) allOk = false;
+    if (r == Fetch::Ok || r == Fetch::UnknownSymbol) clearDue(metricsDue, i);
     vTaskDelay(pdMS_TO_TICKS(CLOSED_PASS_GAP_MS));
   }
-  Serial.printf("quotes: company stats %s\n", allOk ? "updated" : "incomplete, will retry");
-  return allOk;
+  Serial.printf("quotes: company stats %s\n", metricsDue == 0 ? "updated" : "incomplete, will retry");
 }
 
-// Downloads the company name for every stock (ETFs have no profile). Returns false if
-// any failed, so the task can try again later.
-static bool fetchAllProfiles(HTTPClient& http, WiFiClientSecure& tls, int32_t today) {
-  bool allOk = true;
+// Same for company names (ETFs have no profile).
+static void fetchDueProfiles(HTTPClient& http, WiFiClientSecure& tls, int32_t today) {
   for (int i = 0; i < cfg::NUM_TICKERS; i++) {
+    if (!isDue(profilesDue, i)) continue;
     QuoteMsg msg{};
     msg.kind = MsgKind::Profile;
     msg.index = (int8_t)i;
     msg.day = today;
     Fetch r = fetchProfile(http, tls, symbolByIndex(i).symbol, msg.profile);
     if (r == Fetch::Ok) sendToMainLoop(msg);
-    else if (r != Fetch::UnknownSymbol) allOk = false;
+    if (r == Fetch::Ok || r == Fetch::UnknownSymbol) clearDue(profilesDue, i);
     vTaskDelay(pdMS_TO_TICKS(CLOSED_PASS_GAP_MS));
   }
-  Serial.printf("quotes: company names %s\n", allOk ? "updated" : "incomplete, will retry");
-  return allOk;
+  Serial.printf("quotes: company names %s\n", profilesDue == 0 ? "updated" : "incomplete, will retry");
+}
+
+// Next earnings report: a small (~185 B) reply looking 120 days ahead, on the kept-open
+// Finnhub connection.
+static Fetch fetchEarnings(HTTPClient& http, WiFiClientSecure& tls, const char* symbol, int32_t today,
+                           Earnings& out) {
+  int y1, m1, d1, y2, m2, d2;
+  civilFromDay(today, y1, m1, d1);
+  civilFromDay(today + 120, y2, m2, d2);
+  char range[48];
+  snprintf(range, sizeof(range), "&from=%04d-%02d-%02d&to=%04d-%02d-%02d", y1, m1, d1, y2, m2, d2);
+  String url = String("https://finnhub.io/api/v1/calendar/earnings?symbol=") + symbol + range;
+  if (!http.begin(tls, url)) return Fetch::Failed;
+  http.addHeader("X-Finnhub-Token", FINNHUB_API_KEY);
+  int code = http.GET();
+  Fetch result;
+  if (code == 200) {
+    String body = http.getString();
+    result = parseEarnings(body.c_str(), today, out) ? Fetch::Ok : Fetch::Failed;
+  } else {
+    result = fromHttpCode(code, "earnings", symbol);
+  }
+  http.end();
+  if (result == Fetch::Failed) tls.stop();
+  return result;
+}
+
+static void fetchDueEarnings(HTTPClient& http, WiFiClientSecure& tls, int32_t today) {
+  for (int i = 0; i < cfg::NUM_TICKERS; i++) {
+    if (!isDue(earningsDue, i)) continue;
+    QuoteMsg msg{};
+    msg.kind = MsgKind::Earnings;
+    msg.index = (int8_t)i;
+    msg.day = today;
+    if (fetchEarnings(http, tls, symbolByIndex(i).symbol, today, msg.earnings) == Fetch::Ok) {
+      sendToMainLoop(msg);
+      clearDue(earningsDue, i);
+    }
+    vTaskDelay(pdMS_TO_TICKS(CLOSED_PASS_GAP_MS));
+  }
+  Serial.println(earningsDue == 0 ? "quotes: earnings dates updated" : "quotes: earnings dates incomplete, will retry");
 }
 
 // ---------- Twelve Data history backfill ----------
@@ -230,6 +320,25 @@ static Fetch fetchHistory(HTTPClient& http, WiFiClientSecure& tls, const char* s
   return Fetch::Ok;
 }
 
+// Today's 5-minute closes so far, for one stock.
+static Fetch fetchGap(HTTPClient& http, WiFiClientSecure& tls, const char* symbol, uint32_t open,
+                      uint32_t close, GapMsg& out) {
+  out.sessionOpen = open;
+  out.sessionClose = close;
+  // Bars from 9:30 to now (or to the close, if it's over), plus a little margin. The
+  // newest rows come first, and the session we want is the most recent one, so this
+  // reaches back exactly far enough (also on weekends, for Friday).
+  uint32_t nowUnix = (uint32_t)time(nullptr);
+  uint32_t end = nowUnix < close ? nowUnix : close;
+  int rows = end > open ? (int)((end - open) / 300) + 2 : 2;
+  if (rows > GAP_BARS) rows = GAP_BARS;
+  String body;
+  Fetch r = fetchTwelveData(http, tls, symbol, "5min", rows, body);
+  if (r != Fetch::Ok) return r;
+  out.count = parseBarsCsvInto(body.c_str(), out.times, out.prices, GAP_BARS, 300);
+  return out.count > 0 ? Fetch::Ok : Fetch::UnknownSymbol;
+}
+
 // Runs forever in its own FreeRTOS task.
 static void quoteTask(void*) {
   // static: these objects are large, so keep them off this task's stack
@@ -252,8 +361,8 @@ static void quoteTask(void*) {
   uint32_t passAllowedAt = 0;       // a closed-market pass waits until this millis()
   uint32_t metricsRetryAt = 0;
   uint32_t profilesRetryAt = 0;
+  uint32_t earningsRetryAt = 0;
   uint32_t historyRetryAt = 0;
-  int historyNext = 0;              // which stock the backfill does next
   bool historyJustRan = false;      // during the session, alternate history and quotes
   int next = 0;
 
@@ -286,45 +395,63 @@ static void quoteTask(void*) {
       lastOpen = open ? 1 : 0;
     }
 
-    if (profilesRequested && haveTime && (int32_t)(millis() - profilesRetryAt) >= 0) {
-      if (fetchAllProfiles(http, tls, dayNumber(now.year, now.month, now.day))) {
-        profilesRequested = false;
-      } else {
-        profilesRetryAt = millis() + METRICS_RETRY_MS;
-      }
+    if (profilesDue && haveTime && (int32_t)(millis() - profilesRetryAt) >= 0) {
+      fetchDueProfiles(http, tls, dayNumber(now.year, now.month, now.day));
+      if (profilesDue) profilesRetryAt = millis() + METRICS_RETRY_MS;   // some failed: later
       continue;
     }
 
-    if (metricsRequested && haveTime && (int32_t)(millis() - metricsRetryAt) >= 0) {
-      if (fetchAllMetrics(tls, dayNumber(now.year, now.month, now.day))) {
-        metricsRequested = false;
-      } else {
-        metricsRetryAt = millis() + METRICS_RETRY_MS;
+    if (earningsDue && haveTime && (int32_t)(millis() - earningsRetryAt) >= 0) {
+      fetchDueEarnings(http, tls, dayNumber(now.year, now.month, now.day));
+      if (earningsDue) earningsRetryAt = millis() + METRICS_RETRY_MS;
+      continue;
+    }
+
+    if (metricsDue && haveTime && (int32_t)(millis() - metricsRetryAt) >= 0) {
+      fetchDueMetrics(tls, dayNumber(now.year, now.month, now.day));
+      if (metricsDue) metricsRetryAt = millis() + METRICS_RETRY_MS;
+      continue;
+    }
+
+    bool historyTurn = !(open && historyJustRan);
+
+    // Morning gap-fill (only asked for during the session): one stock per pass,
+    // alternating with quotes like the history backfill below.
+    if (gapDue && historyTurn) {
+      static GapMsg gmsg;   // static: ~650 bytes
+      int i = firstDue(gapDue);
+      gmsg.index = (int8_t)i;
+      Fetch r = fetchGap(tdHttp, tdTls, symbolByIndex(i).symbol, gapSessionOpen, gapSessionClose, gmsg);
+      if (r == Fetch::Ok) xQueueSend(gapQueue, &gmsg, portMAX_DELAY);
+      clearDue(gapDue, i);   // one try per stock: if it fails, the chart just starts at boot time
+      if (gapDue == 0) {
+        Serial.println("quotes: filled in today's earlier chart");
+        if (!historyDue) tdTls.stop();   // free the Twelve Data connection's memory
       }
+      historyJustRan = true;
+      vTaskDelay(pdMS_TO_TICKS(TD_GAP_MS));
       continue;
     }
 
     // History backfill: one stock per pass. While the market is open, a quote runs
     // between each stock, so prices keep updating (just more slowly) during the backfill.
-    bool historyTurn = !(open && historyJustRan);
-    if (historyRequested && haveTime && historyTurn && (int32_t)(millis() - historyRetryAt) >= 0) {
+    if (historyDue && haveTime && historyTurn && (int32_t)(millis() - historyRetryAt) >= 0) {
       HistoryMsg hmsg{};
-      hmsg.index = (int8_t)historyNext;
-      const char* symbol = symbolByIndex(historyNext).symbol;
-      Fetch r = fetchHistory(tdHttp, tdTls, symbol, lastCompletedSessionDay(now), hmsg.history);
+      int i = firstDue(historyDue);
+      hmsg.index = (int8_t)i;
+      Fetch r = fetchHistory(tdHttp, tdTls, symbolByIndex(i).symbol, lastCompletedSessionDay(now), hmsg.history);
       if (r == Fetch::Ok) xQueueSend(historyQueue, &hmsg, portMAX_DELAY);
       if (r == Fetch::Ok || r == Fetch::UnknownSymbol) {
-        historyNext++;
+        clearDue(historyDue, i);
       } else if (r == Fetch::BadKey) {
         Serial.println("quotes: Twelve Data rejected its API key (check .env, then rebuild)");
-        historyRequested = false;
+        historyDue = 0;
       } else {
         historyRetryAt = millis() + (r == Fetch::RateLimited ? RATE_LIMIT_BACKOFF_MS : HISTORY_RETRY_MS);
       }
-      if (historyNext >= cfg::NUM_TICKERS) {
-        historyNext = 0;
-        historyRequested = false;
+      if (historyDue == 0) {
         Serial.println("quotes: price history updated");
+        if (!gapDue) tdTls.stop();   // free the Twelve Data connection's memory
       }
       historyJustRan = true;
       vTaskDelay(pdMS_TO_TICKS(TD_GAP_MS));
@@ -349,11 +476,13 @@ static void quoteTask(void*) {
     msg.kind = MsgKind::Quote;
     msg.index = (int8_t)next;
     msg.addToHistory = open;
+    msg.fetchedAt = (uint32_t)time(nullptr);
     switch (fetchQuote(http, tls, symbolByIndex(next).symbol, msg.quote)) {
       case Fetch::Ok:
         sendToMainLoop(msg);
         if (status != FeedStatus::Live) Serial.println("quotes: live");
         status = FeedStatus::Live;
+        quoteFailures = 0;
         break;
       case Fetch::UnknownSymbol:
         break;   // skip it rather than retrying forever
@@ -368,7 +497,9 @@ static void quoteTask(void*) {
         vTaskDelay(pdMS_TO_TICKS(RATE_LIMIT_BACKOFF_MS));
         continue;
       case Fetch::Failed:
-        status = FeedStatus::NetError;
+        // A single hiccup (e.g. while a big download is running) shouldn't flash a red
+        // notice; three in a row means something is actually wrong.
+        if (++quoteFailures >= 3) status = FeedStatus::NetError;
         vTaskDelay(pdMS_TO_TICKS(ERROR_RETRY_MS));
         continue;   // retry the same symbol
     }
@@ -383,13 +514,17 @@ static void quoteTask(void*) {
   }
 }
 
-// Main loop: asks the task for company names and stats when they're missing or older
-// than cfg::PROFILE_REFRESH_DAYS / cfg::METRICS_REFRESH_DAYS. Waits until saved data is
-// restored, so a restart doesn't re-download it.
+// Main loop: marks each stock whose names / stats / earnings / history are missing or out
+// of date, so the task downloads just those. Waits until saved data is restored, so a
+// restart doesn't re-download anything. Each kind is checked at most once per day
+// (history: once per finished session).
 static void requestDataIfDue(uint32_t nowMs) {
   static uint32_t lastCheckMs = 0;
-  static int32_t profilesRequestedDay = -1;
-  static int32_t metricsRequestedDay = -1;
+  static int32_t profilesCheckedDay = -1;
+  static int32_t earningsCheckedDay = -1;
+  static int32_t metricsCheckedDay = -1;
+  static int32_t gapCheckedDay = -1;
+  static int32_t historyCheckedFor = -1;
   if (nowMs - lastCheckMs < METRICS_CHECK_MS) return;
   lastCheckMs = nowMs;
 
@@ -397,50 +532,82 @@ static void requestDataIfDue(uint32_t nowMs) {
   if (!storageRestored() || !timeNowET(now)) return;
   int32_t today = dayNumber(now.year, now.month, now.day);
 
-  // Names don't depend on prices, so they can be requested straight away.
-  if (today != profilesRequestedDay) {
+  // Names: missing or older than PROFILE_REFRESH_DAYS. They don't depend on prices.
+  if (today != profilesCheckedDay) {
+    profilesCheckedDay = today;
     for (int i = 0; i < cfg::NUM_TICKERS; i++) {
       const Profile& p = stock(i).profile;
-      if (!p.valid || today - p.fetchedDay >= cfg::PROFILE_REFRESH_DAYS) {
-        profilesRequested = true;
-        profilesRequestedDay = today;
-        break;
+      if (!p.valid || today - p.fetchedDay >= cfg::PROFILE_REFRESH_DAYS) markDue(profilesDue, i);
+    }
+  }
+
+  // Earnings dates: weekly, and as soon as a stored date has passed (to get the next one).
+  if (today != earningsCheckedDay) {
+    earningsCheckedDay = today;
+    for (int i = 0; i < cfg::NUM_TICKERS; i++) {
+      const Earnings& e = stock(i).earnings;
+      bool passed = e.valid && e.day != 0 && e.day < today;
+      if (!e.valid || passed || today - e.fetchedDay >= cfg::METRICS_REFRESH_DAYS) markDue(earningsDue, i);
+    }
+  }
+
+  // Day-chart holes: if the chart for the session on screen has a hole of more than 20
+  // minutes (the tracker was off), fill it from 5-minute bars. Checked twice per session:
+  // once during it (first check after 9:50), and once after it (from 15 min after the
+  // close, when the provider has the full day). That also covers the previous session's
+  // chart when booting before the open or on a weekend.
+  if (TWELVEDATA_API_KEY[0] != '\0' && !gapDue) {
+    int32_t session = lastSessionDay(now);   // the session the day chart shows
+    uint32_t open, close;
+    sessionBoundsForDay(session, open, close);
+    uint32_t nowUnix = (uint32_t)time(nullptr);
+    bool finished = nowUnix >= close + 15 * 60;
+    bool underway = !finished && marketIsOpenNow() && nowUnix > open + 20 * 60;
+    int32_t key = session * 2 + (finished ? 1 : 0);   // one check for each of the two moments
+    if ((finished || underway) && key != gapCheckedDay) {
+      gapCheckedDay = key;
+      uint32_t end = finished ? close : nowUnix;
+      gapSessionOpen = open;
+      gapSessionClose = close;
+      for (int i = 0; i < cfg::NUM_TICKERS; i++) {
+        if (stock(i).intraday.hasGap(open, end, 20 * 60)) markDue(gapDue, i);
       }
     }
   }
 
-  // History: missing, or doesn't include the last finished session yet (re-checked
-  // 15 min after each close). Asked for at most once per finished session.
-  static int32_t historyRequestedFor = -1;
+  // History: missing, or doesn't include the last finished session yet (checked again
+  // 15 min after each close).
   int32_t completed = lastCompletedSessionDay(now);
-  if (TWELVEDATA_API_KEY[0] != '\0' && completed != historyRequestedFor) {
+  if (TWELVEDATA_API_KEY[0] != '\0' && completed != historyCheckedFor) {
+    historyCheckedFor = completed;
     for (int i = 0; i < cfg::NUM_TICKERS; i++) {
       const History& h = stock(i).history;
-      if (!h.valid || h.throughDay < completed) {
-        historyRequested = true;
-        historyRequestedFor = completed;
-        break;
-      }
+      if (!h.valid || h.throughDay < completed) markDue(historyDue, i);
     }
   }
 
-  // Stats need every stock's price first (to work out the share count).
-  if (today == metricsRequestedDay) return;
-  bool due = false;
-  for (int i = 0; i < cfg::NUM_TICKERS; i++) {
-    const SymbolState& s = stock(i);
-    if (!s.hasData) return;
-    if (!s.fundamentals.valid || today - s.fundamentals.fetchedDay >= cfg::METRICS_REFRESH_DAYS) due = true;
-  }
-  if (due) {
-    metricsRequested = true;
-    metricsRequestedDay = today;
+  // Stats: need the stock's price first (to work out the share count), so a stock without
+  // a price yet is left for a later check today.
+  if (today != metricsCheckedDay) {
+    bool allPriced = true;
+    for (int i = 0; i < cfg::NUM_TICKERS; i++) {
+      const SymbolState& s = stock(i);
+      if (!s.hasData) {
+        allPriced = false;
+        continue;
+      }
+      if (!s.fundamentals.valid || today - s.fundamentals.fetchedDay >= cfg::METRICS_REFRESH_DAYS) {
+        markDue(metricsDue, i);
+      }
+    }
+    if (allPriced) metricsCheckedDay = today;
   }
 }
 
 void quoteClientStart() {
   queue = xQueueCreate(16, sizeof(QuoteMsg));
   historyQueue = xQueueCreate(2, sizeof(HistoryMsg));
+  gapQueue = xQueueCreate(1, sizeof(GapMsg));
   // Core 0 runs the Wi-Fi driver; the Arduino loop (screen, touch) runs on core 1.
   xTaskCreatePinnedToCore(quoteTask, "quotes", TASK_STACK_BYTES, nullptr, 1, nullptr, 0);
 }
@@ -456,7 +623,7 @@ void quoteClientApply(uint32_t nowMs) {
         }
         break;
       case MsgKind::Quote:
-        symbolByIndex(msg.index).applyQuote(msg.quote, nowMs, msg.addToHistory);
+        symbolByIndex(msg.index).applyQuote(msg.quote, nowMs, msg.addToHistory, msg.fetchedAt);
         break;
       case MsgKind::Metrics:
         symbolByIndex(msg.index).applyMetrics(msg.metrics, msg.day);
@@ -466,6 +633,15 @@ void quoteClientApply(uint32_t nowMs) {
         symbolByIndex(msg.index).applyProfile(msg.profile, msg.day);
         storageSaveProfiles();
         break;
+      case MsgKind::Earnings: {
+        SymbolState& s = symbolByIndex(msg.index);
+        s.earnings = msg.earnings;
+        s.earnings.valid = true;
+        s.earnings.fetchedDay = msg.day;
+        s.version++;
+        storageSaveEarnings();
+        break;
+      }
     }
   }
   // static: a HistoryMsg is ~800 bytes, too big to put on the loop's stack every pass
@@ -476,6 +652,16 @@ void quoteClientApply(uint32_t nowMs) {
     s.version++;
     storageSaveHistory();
   }
+  static GapMsg gmsg;
+  bool filled = false;
+  while (gapQueue && xQueueReceive(gapQueue, &gmsg, 0) == pdTRUE) {
+    SymbolState& s = symbolByIndex(gmsg.index);
+    // Only that session's bars, and none within 2 min of a live point (live points win).
+    s.intraday.fillGaps(gmsg.times, gmsg.prices, gmsg.count, gmsg.sessionOpen, gmsg.sessionClose, 120);
+    s.version++;
+    filled = true;
+  }
+  if (filled) storageSaveCharts();   // so a restart doesn't download the fill again
   requestDataIfDue(nowMs);
 }
 

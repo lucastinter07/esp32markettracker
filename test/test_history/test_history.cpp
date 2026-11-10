@@ -3,6 +3,7 @@
 #include <unity.h>
 #include "history.h"
 #include "market_calendar.h"
+#include "price_series.h"
 
 void setUp() {}
 void tearDown() {}
@@ -75,8 +76,71 @@ void test_last_completed_session_day() {
   TEST_ASSERT_EQUAL(dayNumber(2026, 11, 27), lastCompletedSessionDay({2026, 11, 27, 13, 15}));
 }
 
+void test_close_sessions_back() {
+  History h;
+  parseDailyCsv(QQQ_DAILY, h);
+  float close = 0;
+  TEST_ASSERT_TRUE(closeSessionsBack(h, dayNumber(2026, 11, 9), 1, close));   // Friday
+  TEST_ASSERT_EQUAL_FLOAT(656.099976f, close);
+  TEST_ASSERT_TRUE(closeSessionsBack(h, dayNumber(2026, 11, 9), 5, close));   // Mon 11-02
+  TEST_ASSERT_EQUAL_FLOAT(681.090027f, close);
+  TEST_ASSERT_FALSE(closeSessionsBack(h, dayNumber(2026, 11, 9), 8, close));  // only 7 rows
+}
+
+void test_five_minute_bars() {
+  uint32_t times[4];
+  float prices[4];
+  const char* csv =
+      "datetime;open;high;low;close;volume\n"
+      "2026-11-09 14:40:00;510;511;509;510.5;1000\n"
+      "2026-11-09 14:35:00;509;510;508;509.5;1000\n";
+  TEST_ASSERT_EQUAL(2, parseBarsCsvInto(csv, times, prices, 4, 300));
+  uint32_t day = (uint32_t)dayNumber(2026, 11, 9) * 86400u;
+  TEST_ASSERT_EQUAL_UINT32(day + 14 * 3600 + 40 * 60, times[0]);   // 14:35 bar ends 14:40
+  TEST_ASSERT_EQUAL_FLOAT(510.5f, prices[1]);
+}
+
+void test_fill_gaps_morning_middle_and_end() {
+  // Session 0..3000 s. Live points only from 1000 to 1060 (the tracker was off otherwise).
+  PriceSeries s;
+  s.push(105.0f, 1000);
+  s.push(106.0f, 1060);
+  TEST_ASSERT_TRUE(s.hasGap(0, 3000, 300));
+  // 5-minute bars: some before, some right next to the live points, some after
+  uint32_t times[] = {300, 600, 900, 1020, 1500, 1800, 3000, 3300};
+  float prices[] = {101.0f, 102.0f, 103.0f, 999.0f, 107.0f, 108.0f, 109.0f, 555.0f};
+  s.fillGaps(times, prices, 8, 0, 3000, 120);
+  // Kept: 300, 600 | live 1000, 1060 | 1500, 1800, 3000.
+  // Dropped: 900 and 1020 (within 120 s of a live point), 3300 (after the session).
+  TEST_ASSERT_EQUAL(7, s.size());
+  TEST_ASSERT_EQUAL_UINT32(300u, s.timeAt(0));
+  TEST_ASSERT_EQUAL_FLOAT(105.0f, s.at(2));   // live points kept, in order
+  TEST_ASSERT_EQUAL_FLOAT(106.0f, s.at(3));
+  TEST_ASSERT_EQUAL_UINT32(3000u, s.timeAt(6));
+  for (size_t i = 1; i < s.size(); i++) TEST_ASSERT_TRUE(s.timeAt(i) > s.timeAt(i - 1));
+  float ref = 0;
+  TEST_ASSERT_TRUE(s.firstAtOrAfter(650, ref));
+  TEST_ASSERT_EQUAL_FLOAT(105.0f, ref);   // 900 was dropped, so the live point at 1000
+}
+
+void test_has_gap() {
+  PriceSeries s;
+  TEST_ASSERT_TRUE(s.hasGap(0, 1000, 300));   // empty
+  for (uint32_t t = 60; t <= 1000; t += 60) s.push(100.0f, t);   // a point every minute
+  TEST_ASSERT_FALSE(s.hasGap(0, 1000, 300));
+  TEST_ASSERT_TRUE(s.hasGap(0, 2000, 300));    // nothing after 1000: hole at the end
+  PriceSeries h;
+  h.push(1.0f, 100);
+  h.push(2.0f, 900);   // 800 s between points
+  TEST_ASSERT_TRUE(h.hasGap(0, 1000, 300));
+}
+
 int main() {
   UNITY_BEGIN();
+  RUN_TEST(test_close_sessions_back);
+  RUN_TEST(test_five_minute_bars);
+  RUN_TEST(test_fill_gaps_morning_middle_and_end);
+  RUN_TEST(test_has_gap);
   RUN_TEST(test_parses_daily_oldest_first);
   RUN_TEST(test_parses_bars_as_end_times);
   RUN_TEST(test_rejects_error_replies);

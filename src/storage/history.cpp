@@ -15,15 +15,18 @@
 //                     name (8 bytes), Fundamentals struct (raw bytes)
 //   profiles.bin:     magic "MTP1", same layout with the Profile struct
 //   history.bin:      magic "MTH1", same layout with the History struct (backfill)
+//   earnings.bin:     magic "MTE1", same layout with the Earnings struct
 // Symbols are matched by name, so changing the watchlist doesn't scramble saved data.
 static const uint32_t MAGIC_INTRADAY = 0x3249544D;   // the bytes "MTI2"
 static const uint32_t MAGIC_FUNDAMENTALS = 0x3146544D;   // "MTF1"
 static const uint32_t MAGIC_PROFILES = 0x3150544D;       // "MTP1"
 static const uint32_t MAGIC_HISTORY = 0x3148544D;        // "MTH1"
+static const uint32_t MAGIC_EARNINGS = 0x3145544D;       // "MTE1"
 static const char* INTRADAY_PATH = "/intraday.bin";
 static const char* FUNDAMENTALS_PATH = "/fundamentals.bin";
 static const char* PROFILES_PATH = "/profiles.bin";
 static const char* HISTORY_PATH = "/history.bin";
+static const char* EARNINGS_PATH = "/earnings.bin";
 static const int NAME_LEN = 8;
 
 static bool mounted = false;
@@ -210,6 +213,16 @@ void storageSaveHistory() {
   saveRecords(HISTORY_PATH, MAGIC_HISTORY, &SymbolState::history);
 }
 
+void storageSaveCharts() {
+  EtTime now;
+  if (!mounted || cfg::DEMO_PRICES || !timeNowET(now)) return;
+  saveIntraday(lastSessionDay(now));
+}
+
+void storageSaveEarnings() {
+  saveRecords(EARNINGS_PATH, MAGIC_EARNINGS, &SymbolState::earnings);
+}
+
 // ---------- public ----------
 
 void storageInit() {
@@ -228,6 +241,7 @@ void storageUpdate(uint32_t nowMs) {
     int stats = loadRecords(FUNDAMENTALS_PATH, MAGIC_FUNDAMENTALS, &SymbolState::fundamentals);
     int names = loadRecords(PROFILES_PATH, MAGIC_PROFILES, &SymbolState::profile);
     int history = loadRecords(HISTORY_PATH, MAGIC_HISTORY, &SymbolState::history);
+    loadRecords(EARNINGS_PATH, MAGIC_EARNINGS, &SymbolState::earnings);
     Serial.printf("storage: restored names %d, stats %d, history %d (of %d stocks)\n", names, stats,
                   history, cfg::NUM_TICKERS);
     restored = true;

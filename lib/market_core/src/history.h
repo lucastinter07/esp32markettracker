@@ -30,6 +30,13 @@ bool parseDailyCsv(const char* csv, History& out);
 // A bar's close is the price at its end, so it's stored at start + 30 minutes.
 bool parseBarsCsv(const char* csv, History& out);
 
+// The lower-level version: any bar size (e.g. 300 for 5-minute bars), into any arrays.
+// Fills up to `capacity` bars, oldest first, with END times. Returns how many.
+int parseBarsCsvInto(const char* csv, uint32_t* times, float* prices, int capacity, uint32_t barSeconds);
+
+// The close `sessions` trading days before `currentSessionDay`. False without enough history.
+bool closeSessionsBack(const History& h, int32_t currentSessionDay, int sessions, float& close);
+
 // Percent change from the close `sessions` trading days before `currentSessionDay`
 // to `price`. Rows on or after the current session are ignored (they'd be today).
 // False when there isn't enough history yet.

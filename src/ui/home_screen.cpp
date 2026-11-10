@@ -61,6 +61,22 @@ static void drawRow(int i, bool highlighted) {
   gfx.setCursor(10, ty);
   gfx.print(s.symbol);
 
+  // Earnings within a week: small amber marker under the symbol, e.g. "E 3d"
+  EtTime now;
+  if (s.earnings.valid && s.earnings.day != 0 && timeNowET(now)) {
+    int daysAway = s.earnings.day - dayNumber(now.year, now.month, now.day);
+    if (daysAway >= 0 && daysAway <= 7) {
+      char mark[10];
+      if (daysAway == 0) snprintf(mark, sizeof(mark), "E today");
+      else snprintf(mark, sizeof(mark), "E %dd", daysAway);
+      gfx.setTextSize(1);
+      gfx.setTextColor(theme::ACCENT, bg);
+      gfx.setCursor(10, y + theme::ROW_H - 11);
+      gfx.print(mark);
+      gfx.setTextSize(2);
+    }
+  }
+
   if (!s.hasData) {
     gfx.setTextColor(theme::DIM, bg);
     gfx.setCursor(100, ty);
