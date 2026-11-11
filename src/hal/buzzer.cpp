@@ -24,6 +24,14 @@ void buzzerChime() {
   tone(cfg::BUZZER_PIN, 1320, 180);
 }
 
+void buzzerAlert(bool up) {
+  if (muted) return;   // alerts have their own on/off (Settings > Price alerts)
+  static const unsigned int NOTES[] = {880, 1175, 1568};   // A5, D6, G6
+  for (int i = 0; i < 3; i++) {
+    tone(cfg::BUZZER_PIN, NOTES[up ? i : 2 - i], 110);
+  }
+}
+
 void buzzerSetMuted(bool m) {
   muted = m;
 }

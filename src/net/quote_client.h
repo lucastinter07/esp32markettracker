@@ -45,3 +45,23 @@ struct SymbolLookup {
 };
 void quoteClientLookup(const char* symbol);       // starts a check (replaces any pending one)
 bool quoteClientLookupResult(SymbolLookup& out);  // true once an answer is ready
+
+// Settings > Re-download data: fetch names, stats, earnings, history and prices again for
+// every stock (~1 MB of data), as if nothing had been saved.
+void quoteClientRefreshAll();
+
+// For the Diagnostics screen. Times are millis() values (0 = never); the "Due" fields are
+// downloads still waiting, one bit per stock (quoteDue: one bit per symbol).
+struct FeedStats {
+  uint32_t lastQuoteOkMs;
+  uint32_t lastTdOkMs;
+  int failuresInRow;          // quote failures in a row (QUOTE ERROR shows from 3)
+  uint32_t finnhubLastMinute; // Finnhub requests in the last 60 s (free limit: 60)
+  uint32_t finnhubTotal;      // since boot
+  uint32_t tdToday;           // Twelve Data requests today (free limit: 800 a day)
+  uint32_t tdTotal;
+  uint8_t profilesDue, earningsDue, metricsDue, historyDue, gapDue, quoteDue;
+  char lastError[48];         // the most recent problem, "" if none since boot
+  uint32_t lastErrorMs;
+};
+void quoteClientStats(FeedStats& out);

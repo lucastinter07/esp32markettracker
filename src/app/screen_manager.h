@@ -5,6 +5,7 @@
 #pragma once
 #include <stdint.h>
 #include "app/input_event.h"
+#include "app/price_alerts.h"
 #include "ui/detail_screen.h"
 
 class ScreenManager {
@@ -13,7 +14,7 @@ class ScreenManager {
   void update(uint32_t nowMs);   // call every loop
 
  private:
-  enum class Mode { Splash, Home, AutoDetail, PinnedDetail, Setup, Settings, Watchlist };
+  enum class Mode { Splash, Home, AutoDetail, PinnedDetail, Setup, Settings, Watchlist, Diagnostics };
 
   void handleInput(const InputEvent& ev, uint32_t nowMs);
   void handleInputAction(const InputEvent& ev, uint32_t nowMs);
@@ -25,6 +26,9 @@ class ScreenManager {
   void showSettings(uint32_t nowMs, int row = 0);
   void handleSettingsInput(const InputEvent& ev, uint32_t nowMs);
   void pinIfAuto();
+  void showBanner(int stockIndex, AlertDirection dir, uint32_t nowMs);
+  void dismissBanner(uint32_t nowMs);
+  void redrawCurrent();
 
   Mode mode_ = Mode::Splash;
   uint32_t modeStartMs_ = 0;   // when the current screen (or its timer) started
@@ -33,5 +37,9 @@ class ScreenManager {
   int highlight_ = 0;          // selected row on Home (moved by PREV/NEXT)
   bool setupDismissed_ = false;  // BACK pressed on the Wi-Fi setup screen
   int settingsRow_ = 0;        // highlighted row on the Settings screen
+  bool bannerShown_ = false;   // a price-alert banner covers the top of the screen
+  uint32_t bannerUntilMs_ = 0;
+  uint32_t lastUpdateMs_ = 0;
+  int bannerStock_ = 0;
   detail::Page page_ = detail::Page::Day;   // which Detail page is showing
 };

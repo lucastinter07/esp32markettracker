@@ -19,3 +19,13 @@ void storageSaveProfiles();           // call after new company names arrive
 void storageSaveHistory();            // call after backfilled history arrives
 void storageSaveEarnings();           // call after earnings dates arrive
 void storageSaveCharts();             // save the day charts now (e.g. after a gap-fill)
+
+// For the Diagnostics screen: flash use and the size of each saved file (0 = not saved yet).
+static const int STORAGE_FILES = 5;
+struct StorageInfo {
+  bool mounted;
+  uint32_t usedBytes, totalBytes;
+  const char* names[STORAGE_FILES];   // "chart", "stats", "names", "history", "earnings"
+  uint32_t sizes[STORAGE_FILES];
+};
+void storageInfo(StorageInfo& out);

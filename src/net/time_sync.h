@@ -6,6 +6,7 @@
 void timeSyncStart();             // call once Wi-Fi is connected
 bool timeNowET(EtTime& out);      // current US Eastern time; false until synced
 bool marketIsOpenNow();           // regular session right now; false until synced
+bool timeLastSync(uint32_t& msAgo);   // false until the first sync; else how long ago the last one was
 
 // Start (9:30 ET) and end (16:00, or 13:00 on early-close days) of the trading session
 // on the same day as `anyTime`, all in unix seconds. Used to place chart points by time.

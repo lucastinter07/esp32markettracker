@@ -1,7 +1,10 @@
 // Entry point. This file only starts each module and runs the main loop.
 // The actual work lives in the folders under src/ (see CLAUDE.md for the layout).
 #include <Arduino.h>
+#include "app/health.h"
 #include "app/input_event.h"
+#include "app/price_alerts.h"
+#include "app/schedule.h"
 #include "app/screen_manager.h"
 #include "config.h"
 #include "data/fake_feed.h"
@@ -24,6 +27,7 @@ void setup() {
   // serial monitor to reconnect so the startup messages aren't lost.
   while (!Serial && millis() < 2000) delay(10);
   uint32_t now = millis();
+  Serial.printf("boot: firmware %s, last reset = %s\n", cfg::FIRMWARE_VERSION, healthResetReason());
 
   inputInit();
   settingsInit();   // first: the buzzer and backlight read their settings
@@ -54,6 +58,9 @@ void loop() {
   if (cfg::DEMO_PRICES) fakeFeedUpdate(now);
   else quoteClientApply(now);
   storageUpdate(now);
+  alertsUpdate();
+  scheduleUpdate(now);   // open/close chime + night dimming
   screens.update(now);
+  healthLogHourly(now);
   delay(5);
 }

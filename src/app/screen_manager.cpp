@@ -1,14 +1,19 @@
 #include "app/screen_manager.h"
 #include <Arduino.h>
 #include "app/input_event.h"
+#include "app/schedule.h"
 #include "config.h"
 #include "data/market_data.h"
+#include "data/settings.h"
 #include "hal/buzzer.h"
 #include "hal/display.h"
 #include "net/quote_client.h"
+#include "storage/history.h"
 #include "net/time_sync.h"
 #include "net/wifi_manager.h"
 #include "ui/detail_screen.h"
+#include "ui/alert_banner.h"
+#include "ui/diag_screen.h"
 #include "ui/home_screen.h"
 #include "ui/settings_screen.h"
 #include "ui/splash_screen.h"
@@ -16,6 +21,7 @@
 #include "ui/setup_screen.h"
 
 static const uint32_t SETTINGS_IDLE_MS = 60000;   // Settings returns to Home after 60 s untouched
+static const uint32_t BANNER_MS = 10000;          // how long a price-alert banner stays up
 
 static int wrap(int i) {
   return (i + cfg::NUM_TICKERS) % cfg::NUM_TICKERS;
@@ -68,6 +74,7 @@ void ScreenManager::finishSplash(uint32_t nowMs) {
 
 void ScreenManager::showSetup() {
   mode_ = Mode::Setup;
+  bannerShown_ = false;   // the setup screen replaces everything
   wifisetup::drawFull();
   Serial.println("screen: wifi setup");
 }
@@ -117,10 +124,28 @@ void ScreenManager::update(uint32_t nowMs) {
     return;
   }
 
+  // Price alerts: the buzzer already sounded; show a banner on Home / Detail. (On other
+  // screens, e.g. Settings, the sound is the only notice.)
+  int alertStock;
+  AlertDirection alertDir;
+  if (alertsTake(alertStock, alertDir) &&
+      (mode_ == Mode::Home || mode_ == Mode::AutoDetail || mode_ == Mode::PinnedDetail)) {
+    showBanner(alertStock, alertDir, nowMs);
+  }
+  uint32_t loopGap = nowMs - lastUpdateMs_;
+  lastUpdateMs_ = nowMs;
+  if (bannerShown_) {
+    // The screen underneath is paused (no redraws that would paint over the banner), and
+    // so is its timer, so the auto cycle picks up where it left off.
+    modeStartMs_ += loopGap;
+    if ((int32_t)(nowMs - bannerUntilMs_) >= 0) dismissBanner(nowMs);
+    return;
+  }
+
   uint32_t elapsed = nowMs - modeStartMs_;
   switch (mode_) {
     case Mode::Home:
-      if (elapsed >= cfg::HOME_DURATION_MS) {
+      if (settings().autoCycle && elapsed >= cycleHomeMs()) {   // auto cycle off: stay on Home
         page_ = detail::Page::Day;   // the auto cycle always starts on the day chart
         showDetail(nextAutoTicker_, false, nowMs);
         nextAutoTicker_ = wrap(nextAutoTicker_ + 1);
@@ -129,19 +154,21 @@ void ScreenManager::update(uint32_t nowMs) {
       }
       break;
 
-    case Mode::AutoDetail:
-      if (elapsed >= cfg::DETAIL_DURATION_MS) {
+    case Mode::AutoDetail: {
+      uint32_t detailMs = cycleDetailMs();
+      if (elapsed >= detailMs) {
         showHome(nowMs);
       } else {
         // Halfway through, turn to the stats page.
-        if (page_ != detail::Page::Stats && elapsed >= cfg::DETAIL_DURATION_MS / 2) {
+        if (page_ != detail::Page::Stats && elapsed >= detailMs / 2) {
           page_ = detail::Page::Stats;
           detail::setPage(ticker_, page_);
         }
         detail::update(ticker_);
-        detail::drawCountdown(1.0f - (float)elapsed / cfg::DETAIL_DURATION_MS);
+        detail::drawCountdown(1.0f - (float)elapsed / detailMs);
       }
       break;
+    }
 
     case Mode::PinnedDetail:
       detail::update(ticker_);   // no timeout: stays until BACK
@@ -163,10 +190,15 @@ void ScreenManager::update(uint32_t nowMs) {
       if (elapsed >= SETTINGS_IDLE_MS) showHome(nowMs);
       else watchui::update(nowMs);
       break;
+
+    case Mode::Diagnostics:
+      diagui::update(nowMs);   // no time limit: it's meant to be watched
+      break;
   }
 }
 
 void ScreenManager::handleInput(const InputEvent& ev, uint32_t nowMs) {
+  scheduleWake(nowMs);   // at night, any input brings back full brightness for a while
   buzzerClick();
   handleInputAction(ev, nowMs);
   // Drawn after the action so a screen change doesn't wipe it straight away.
@@ -190,6 +222,19 @@ void ScreenManager::handleInputAction(const InputEvent& ev, uint32_t nowMs) {
     return;
   }
 
+  if (bannerShown_) {
+    // Tapping the banner (or SELECT) opens the stock it's about; anything else just
+    // removes the banner and then does what it normally does.
+    bool open = ev.type == InputType::Select || (ev.type == InputType::Tap && banner::isTap(ev.x, ev.y));
+    dismissBanner(nowMs);
+    if (open) {
+      highlight_ = bannerStock_;
+      page_ = detail::Page::Day;
+      showDetail(bannerStock_, true, nowMs);
+      return;
+    }
+  }
+
   // Holding BACK opens Settings from any other screen.
   if (ev.type == InputType::LongBack) {
     if (mode_ != Mode::Settings) showSettings(nowMs);
@@ -204,6 +249,11 @@ void ScreenManager::handleInputAction(const InputEvent& ev, uint32_t nowMs) {
   if (mode_ == Mode::Watchlist) {
     modeStartMs_ = nowMs;
     if (watchui::handle(ev, nowMs) == watchui::Result::Exit) showSettings(nowMs, settingsui::watchlistRow());
+    return;
+  }
+
+  if (mode_ == Mode::Diagnostics) {
+    if (diagui::handle(ev, nowMs) == diagui::Result::Exit) showSettings(nowMs, settingsui::diagnosticsRow());
     return;
   }
 
@@ -275,6 +325,12 @@ void ScreenManager::handleSettingsInput(const InputEvent& ev, uint32_t nowMs) {
         showHome(nowMs);
         return;
       }
+      if (int step = settingsui::pageTap(ev.x, ev.y)) {
+        // The page buttons: highlight the first row of the other page.
+        int page = (settingsui::currentPage() + step + settingsui::pageCount()) % settingsui::pageCount();
+        settingsRow_ = settingsui::firstRowOfPage(page);
+        break;
+      }
       activateRow = settingsui::rowAt(ev.x, ev.y);
       if (activateRow >= 0 && activateRow != settingsRow_) {
         settingsRow_ = activateRow;
@@ -287,6 +343,21 @@ void ScreenManager::handleSettingsInput(const InputEvent& ev, uint32_t nowMs) {
     wifiOpenSetup(nowMs);   // update() switches to the setup screen once the hotspot is up
     return;
   }
+  if (action == settingsui::Action::OpenDiagnostics) {
+    mode_ = Mode::Diagnostics;
+    diagui::open(nowMs);
+    Serial.println("screen: diagnostics");
+    return;
+  }
+  if (action == settingsui::Action::RefreshData) {
+    quoteClientRefreshAll();   // the row's value goes back to "~1 MB"; downloads show on Diagnostics
+  }
+  if (action == settingsui::Action::Restart) {
+    Serial.println("restarting (Settings)");
+    storageSaveCharts();   // keep today's chart
+    delay(100);            // let the log line go out
+    ESP.restart();
+  }
   if (action == settingsui::Action::OpenWatchlist) {
     mode_ = Mode::Watchlist;
     modeStartMs_ = nowMs;
@@ -295,6 +366,26 @@ void ScreenManager::handleSettingsInput(const InputEvent& ev, uint32_t nowMs) {
     return;
   }
   settingsui::update(settingsRow_);
+}
+
+void ScreenManager::showBanner(int stockIndex, AlertDirection dir, uint32_t nowMs) {
+  bannerShown_ = true;
+  bannerStock_ = stockIndex;
+  bannerUntilMs_ = nowMs + BANNER_MS;
+  banner::draw(stockIndex, dir);
+}
+
+void ScreenManager::dismissBanner(uint32_t nowMs) {
+  (void)nowMs;
+  if (!bannerShown_) return;
+  bannerShown_ = false;
+  redrawCurrent();
+}
+
+// Repaints the current Home / Detail screen (after the banner covered part of it).
+void ScreenManager::redrawCurrent() {
+  if (mode_ == Mode::Home) home::drawFull(highlight_);
+  else if (mode_ == Mode::AutoDetail || mode_ == Mode::PinnedDetail) detail::drawFull(ticker_, mode_ == Mode::PinnedDetail, page_);
 }
 
 void ScreenManager::pinIfAuto() {

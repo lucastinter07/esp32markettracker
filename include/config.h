@@ -5,6 +5,10 @@
 
 namespace cfg {
 
+// Shown on the Diagnostics screen and in the boot log. Bump it when you flash a change
+// worth telling apart (phase.patch, e.g. "7.0" = Phase 7, first build).
+constexpr const char* FIRMWARE_VERSION = "7.0";
+
 // ---- Display (ST7365P over SPI) ----
 // SCK 12 / MOSI 11 / MISO 13 / CS 10 are the ESP32-S3 default SPI pins,
 // which DFRobot_GDL uses automatically; listed here for reference.
@@ -41,7 +45,8 @@ constexpr uint8_t BUZZER_PIN = 18;
 // ---- Screen cycle ----
 constexpr uint32_t HOME_DURATION_MS   = 30000;
 constexpr uint32_t SPLASH_MIN_MS      = 2500;    // startup screen shows at least this long
-constexpr uint32_t SPLASH_MAX_MS      = 20000;   // ...and at most this long, even if prices haven't arrived
+constexpr uint32_t SPLASH_MAX_MS      = 200000;  // safety limit: it normally leaves once every price is in
+                                                 // (a tap or button skips it any time)
 constexpr uint32_t DETAIL_DURATION_MS = 20000;   // auto mode: chart page, then stats page halfway
 
 // ---- Watchlist ----
@@ -57,6 +62,10 @@ constexpr int NUM_INDEX_CHOICES = 4;
 constexpr const char* INDEX_CHOICE_SYMBOLS[NUM_INDEX_CHOICES] = {"SPY", "QQQ", "DIA", "IWM"};
 constexpr const char* INDEX_CHOICE_LABELS[NUM_INDEX_CHOICES]  = {"S&P 500", "NASDAQ", "DOW", "RUSSELL 2000"};
 constexpr uint8_t DEFAULT_INDEX_CHOICES[NUM_INDEXES] = {0, 1};   // SPY, QQQ
+
+// Testing aid for price alerts: > 0 replaces the Settings threshold (e.g. 0.1 %, so the
+// first live quote of any stock that moved fires one). Alerts must still be ON in Settings.
+constexpr float ALERT_TEST_PERCENT = 0;
 
 // true: made-up prices from data/fake_feed (no network needed), labelled DEMO PRICES.
 // false: live prices from Finnhub (net/quote_client), using the key in .env.

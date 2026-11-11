@@ -263,3 +263,31 @@ void storageUpdate(uint32_t nowMs) {
 bool storageRestored() {
   return restored || cfg::DEMO_PRICES;
 }
+
+// Size of a file from the directory listing (0 if it isn't there), for the same reason as
+// fileExists(): opening a missing file logs an error.
+static uint32_t fileSize(const char* path) {
+  File dir = LittleFS.open("/");
+  if (!dir) return 0;
+  uint32_t size = 0;
+  for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+    const char* name = f.name();
+    if (strcmp(name, path) == 0 || strcmp(name, path + 1) == 0) size = f.size();
+    f.close();
+  }
+  dir.close();
+  return size;
+}
+
+void storageInfo(StorageInfo& out) {
+  static const char* const NAMES[STORAGE_FILES] = {"chart", "stats", "names", "history", "earnings"};
+  static const char* const PATHS[STORAGE_FILES] = {INTRADAY_PATH, FUNDAMENTALS_PATH, PROFILES_PATH,
+                                                   HISTORY_PATH, EARNINGS_PATH};
+  out.mounted = mounted;
+  out.usedBytes = mounted ? LittleFS.usedBytes() : 0;
+  out.totalBytes = mounted ? LittleFS.totalBytes() : 0;
+  for (int i = 0; i < STORAGE_FILES; i++) {
+    out.names[i] = NAMES[i];
+    out.sizes[i] = mounted ? fileSize(PATHS[i]) : 0;
+  }
+}

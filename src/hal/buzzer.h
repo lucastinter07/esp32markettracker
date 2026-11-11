@@ -4,5 +4,6 @@
 void buzzerInit();
 void buzzerClick();   // short tick on button/touch input
 void buzzerChime();   // two-note chime (e.g. market open/close)
+void buzzerAlert(bool up);   // price alert: three rising (up) or falling (down) notes
 void buzzerSetMuted(bool muted);
 bool buzzerMuted();

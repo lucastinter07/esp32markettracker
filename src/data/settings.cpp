@@ -1,22 +1,26 @@
 #include "data/settings.h"
 #include <Arduino.h>
 #include <Preferences.h>
+#include "config.h"
 
-// Saved as one block of bytes. The version number changes whenever the Settings struct
-// changes, so an older saved block is ignored instead of being read into the wrong fields.
-static const uint8_t SETTINGS_VERSION = 1;
+// Saved as one block of bytes. Version 2 added the cycle options at the end of the struct;
+// a version-1 block is shorter and simply fills the fields it had. A future change that
+// isn't "add fields at the end" must bump the version and drop older blocks.
+static const uint8_t SETTINGS_VERSION = 2;
 
 static Settings current;
 static Preferences prefs;
 
 void settingsInit() {
   prefs.begin("settings", false);
-  Settings saved;
-  bool ok = prefs.getUChar("version", 0) == SETTINGS_VERSION &&
-            prefs.getBytes("data", &saved, sizeof(saved)) == sizeof(saved);
+  uint8_t version = prefs.getUChar("version", 0);
+  size_t length = prefs.getBytesLength("data");
+  Settings saved;   // starts with the defaults
+  bool ok = (version == 1 || version == SETTINGS_VERSION) && length > 0 && length <= sizeof(saved) &&
+            prefs.getBytes("data", &saved, length) == length;
   prefs.end();
   if (ok) current = saved;
-  Serial.println(ok ? "settings: loaded" : "settings: using defaults");
+  Serial.printf("settings: %s\n", ok ? (version == SETTINGS_VERSION ? "loaded" : "loaded (older format)") : "using defaults");
 }
 
 const Settings& settings() {
@@ -32,4 +36,31 @@ void settingsSave() {
   prefs.putUChar("version", SETTINGS_VERSION);
   prefs.putBytes("data", &current, sizeof(current));
   prefs.end();
+}
+
+// Home time, then time on each stock, per speed. NORMAL is config.h's timing.
+static const uint32_t CYCLE_MS[3][2] = {
+    {15000, 10000},
+    {cfg::HOME_DURATION_MS, cfg::DETAIL_DURATION_MS},
+    {60000, 30000},
+};
+
+static uint8_t speedIndex() {
+  return current.cycleSpeed <= CYCLE_SLOW ? current.cycleSpeed : CYCLE_NORMAL;
+}
+
+uint32_t cycleHomeMs() {
+  return CYCLE_MS[speedIndex()][0];
+}
+
+uint32_t cycleDetailMs() {
+  return CYCLE_MS[speedIndex()][1];
+}
+
+const char* cycleSpeedName(uint8_t speed) {
+  switch (speed) {
+    case CYCLE_FAST: return "FAST";
+    case CYCLE_SLOW: return "SLOW";
+    default:         return "NORMAL";
+  }
 }

@@ -137,7 +137,57 @@ static int quoteFailures = 0;              // in a row; QUOTE ERROR shows only a
 
 enum class Fetch { Ok, UnknownSymbol, BadKey, RateLimited, Failed };
 
+// ---------- numbers for the Diagnostics screen ----------
+// Written by the task, read by the screen. Counters are single 32-bit values (safe to read
+// any time); the error text and the request-time ring are changed under dueLock.
+static uint32_t finnhubTimes[64];   // millis() of the latest Finnhub requests (ring)
+static uint8_t finnhubNext = 0;
+static volatile uint32_t finnhubTotal = 0;
+static volatile uint32_t tdTotal = 0;
+static volatile uint32_t tdToday = 0;
+static int32_t tdDay = -1;
+static volatile uint32_t lastQuoteOkMs = 0;
+static volatile uint32_t lastTdOkMs = 0;
+static char lastError[48] = "";
+static volatile uint32_t lastErrorMs = 0;
+static volatile bool refreshAllRequested = false;
+
+static void noteError(const char* text) {
+  taskENTER_CRITICAL(&dueLock);
+  strncpy(lastError, text, sizeof(lastError) - 1);
+  lastError[sizeof(lastError) - 1] = '\0';
+  lastErrorMs = millis();
+  taskEXIT_CRITICAL(&dueLock);
+}
+
+// http.GET(), counted per service (Finnhub allows 60 a minute, Twelve Data 800 a day).
+static int countedGet(HTTPClient& client, bool twelveData) {
+  if (twelveData) {
+    EtTime now;
+    if (timeNowET(now)) {
+      int32_t day = dayNumber(now.year, now.month, now.day);
+      if (day != tdDay) {   // the daily allowance starts again
+        tdDay = day;
+        tdToday = 0;
+      }
+    }
+    tdTotal++;
+    tdToday++;
+  } else {
+    taskENTER_CRITICAL(&dueLock);
+    finnhubTimes[finnhubNext] = millis();
+    finnhubNext = (finnhubNext + 1) % 64;
+    taskEXIT_CRITICAL(&dueLock);
+    finnhubTotal++;
+  }
+  return client.GET();
+}
+
 static Fetch fromHttpCode(int code, const char* what, const char* symbol) {
+  char text[48];
+  if (code < 0) snprintf(text, sizeof(text), "%s %s: no connection (%d)", what, symbol, code);
+  else snprintf(text, sizeof(text), "%s %s: HTTP %d", what, symbol, code);
+  noteError(text);
   if (code == 401 || code == 403) return Fetch::BadKey;
   if (code == 429) return Fetch::RateLimited;
   // Negative codes are connection errors. Free memory helps tell a network problem from
@@ -153,7 +203,7 @@ static Fetch fetchQuote(HTTPClient& http, WiFiClientSecure& tls, const char* sym
   // The key travels in a header rather than in the address.
   http.addHeader("X-Finnhub-Token", FINNHUB_API_KEY);
 
-  int code = http.GET();
+  int code = countedGet(http, false);
   Fetch result;
   if (code == 200) {
     String body = http.getString();
@@ -177,7 +227,7 @@ static Fetch fetchProfile(HTTPClient& http, WiFiClientSecure& tls, const char* s
   String url = String("https://finnhub.io/api/v1/stock/profile2?symbol=") + symbol;
   if (!http.begin(tls, url)) return Fetch::Failed;
   http.addHeader("X-Finnhub-Token", FINNHUB_API_KEY);
-  int code = http.GET();
+  int code = countedGet(http, false);
   Fetch result;
   if (code == 200) {
     String body = http.getString();
@@ -205,7 +255,7 @@ static Fetch fetchMetrics(WiFiClientSecure& tls, const char* symbol, MetricData&
   if (!http.begin(tls, url)) return Fetch::Failed;
   http.addHeader("X-Finnhub-Token", FINNHUB_API_KEY);
 
-  int code = http.GET();
+  int code = countedGet(http, false);
   Fetch result;
   if (code == 200) {
     JsonDocument filter;
@@ -320,7 +370,7 @@ static Fetch fetchEarnings(HTTPClient& http, WiFiClientSecure& tls, const char* 
   String url = String("https://finnhub.io/api/v1/calendar/earnings?symbol=") + symbol + range;
   if (!http.begin(tls, url)) return Fetch::Failed;
   http.addHeader("X-Finnhub-Token", FINNHUB_API_KEY);
-  int code = http.GET();
+  int code = countedGet(http, false);
   Fetch result;
   if (code == 200) {
     String body = http.getString();
@@ -360,11 +410,12 @@ static Fetch fetchTwelveData(HTTPClient& http, WiFiClientSecure& tls, const char
                "&interval=" + interval + "&outputsize=" + rows + "&timezone=UTC&format=CSV";
   if (!http.begin(tls, url)) return Fetch::Failed;
   http.addHeader("Authorization", String("apikey ") + TWELVEDATA_API_KEY);
-  int code = http.GET();
+  int code = countedGet(http, true);
   Fetch result;
   if (code == 200) {
     body = http.getString();
     result = Fetch::Ok;
+    lastTdOkMs = millis();
   } else if (code == 400 || code == 404) {
     result = Fetch::UnknownSymbol;
   } else {
@@ -568,6 +619,7 @@ static void quoteTask(void*) {
     switch (fetchQuote(http, tls, symbol, msg.quote)) {
       case Fetch::Ok:
         sendToMainLoop(msg);
+        lastQuoteOkMs = millis();
         if (status != FeedStatus::Live) Serial.println("quotes: live");
         status = FeedStatus::Live;
         quoteFailures = 0;
@@ -614,6 +666,19 @@ static void requestDataIfDue(uint32_t nowMs) {
   static int32_t metricsCheckedDay = -1;
   static int32_t gapCheckedDay = -1;
   static int32_t historyCheckedFor = -1;
+  if (refreshAllRequested && storageRestored()) {
+    // Settings > Re-download data: everything for every stock, as if nothing was saved.
+    refreshAllRequested = false;
+    for (int i = 0; i < cfg::NUM_TICKERS; i++) {
+      markDue(profilesDue, i);
+      markDue(earningsDue, i);
+      if (stock(i).hasData) markDue(metricsDue, i);
+      if (TWELVEDATA_API_KEY[0] != '\0') markDue(historyDue, i);
+    }
+    for (int i = 0; i < NUM_SYMBOLS; i++) markDue(quoteDue, i);
+    recheckRequested = true;   // and redo the chart-hole check
+    Serial.println("quotes: re-downloading everything (Settings)");
+  }
   if (recheckRequested && storageRestored()) {
     // A ticker changed: forget which checks already ran today, so the new one's missing
     // data is found now. Each check only marks stocks that lack something, so the
@@ -799,4 +864,32 @@ void quoteClientLookup(const char* symbol) {
 
 bool quoteClientLookupResult(SymbolLookup& out) {
   return lookupQueue && xQueueReceive(lookupQueue, &out, 0) == pdTRUE;
+}
+
+void quoteClientRefreshAll() {
+  refreshAllRequested = true;
+}
+
+void quoteClientStats(FeedStats& out) {
+  uint32_t now = millis();
+  out.lastQuoteOkMs = lastQuoteOkMs;
+  out.lastTdOkMs = lastTdOkMs;
+  out.failuresInRow = quoteFailures;
+  out.finnhubTotal = finnhubTotal;
+  out.tdTotal = tdTotal;
+  out.tdToday = tdToday;
+  out.profilesDue = profilesDue;
+  out.earningsDue = earningsDue;
+  out.metricsDue = metricsDue;
+  out.historyDue = historyDue;
+  out.gapDue = gapDue;
+  out.quoteDue = quoteDue;
+  out.finnhubLastMinute = 0;
+  taskENTER_CRITICAL(&dueLock);
+  for (int i = 0; i < 64; i++) {
+    if (finnhubTimes[i] != 0 && now - finnhubTimes[i] < 60000) out.finnhubLastMinute++;
+  }
+  memcpy(out.lastError, lastError, sizeof(out.lastError));
+  out.lastErrorMs = lastErrorMs;
+  taskEXIT_CRITICAL(&dueLock);
 }

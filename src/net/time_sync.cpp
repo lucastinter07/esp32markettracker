@@ -1,14 +1,24 @@
 #include "net/time_sync.h"
 #include <Arduino.h>
+#include <esp_sntp.h>
 #include <time.h>
 
 // POSIX time zone rule for US Eastern: EST is UTC-5, EDT starts the 2nd Sunday of March
 // and ends the 1st Sunday of November. The C library applies daylight saving itself.
 static const char* TZ_EASTERN = "EST5EDT,M3.2.0,M11.1.0";
 static bool started = false;
+static volatile uint32_t lastSyncMs = 0;   // written by the network task, read by the UI
+static volatile bool everSynced = false;
+
+// Called by the SNTP client (in the network task) after each successful sync.
+static void onSync(struct timeval*) {
+  lastSyncMs = millis();
+  everSynced = true;
+}
 
 void timeSyncStart() {
   if (started) return;
+  sntp_set_time_sync_notification_cb(onSync);
   configTzTime(TZ_EASTERN, "pool.ntp.org", "time.nist.gov");   // syncs in the background
   started = true;
 }
@@ -45,4 +55,10 @@ void sessionBoundsForDay(int32_t day, uint32_t& openUnix, uint32_t& closeUnix) {
 bool marketIsOpenNow() {
   EtTime now;
   return timeNowET(now) && marketStatus(now).phase == MarketPhase::Open;
+}
+
+bool timeLastSync(uint32_t& msAgo) {
+  if (!everSynced) return false;
+  msAgo = millis() - lastSyncMs;
+  return true;
 }
