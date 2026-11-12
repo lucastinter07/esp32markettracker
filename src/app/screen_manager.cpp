@@ -13,6 +13,7 @@
 #include "net/wifi_manager.h"
 #include "ui/detail_screen.h"
 #include "ui/alert_banner.h"
+#include "ui/clock_screen.h"
 #include "ui/diag_screen.h"
 #include "ui/home_screen.h"
 #include "ui/sector_screen.h"
@@ -23,6 +24,8 @@
 
 static const uint32_t SETTINGS_IDLE_MS = 60000;   // Settings returns to Home after 60 s untouched
 static const uint32_t BANNER_MS = 10000;          // how long a price-alert banner stays up
+static const uint32_t CLOCK_IDLE_MS = 60000;      // overnight: back to the clock after 60 s untouched
+static const int CLOCK_GRACE_MIN = 15;            // the clock waits this long after a close
 
 static int wrap(int i) {
   return (i + cfg::NUM_TICKERS) % cfg::NUM_TICKERS;
@@ -70,7 +73,23 @@ void ScreenManager::updateSplash(uint32_t nowMs) {
 
 void ScreenManager::finishSplash(uint32_t nowMs) {
   if (wifiState() == WifiState::Setup) showSetup();
+  else if (clockWanted()) showClock(nowMs);
   else showHome(nowMs);
+}
+
+// Overnight clock (8D): on in Settings, and the market closed (from 15 min after the close
+// until the open, weekends and holidays included).
+bool ScreenManager::clockWanted() const {
+  EtTime now;
+  return settings().overnightClock && timeNowET(now) && overnightClockTime(now, CLOCK_GRACE_MIN);
+}
+
+void ScreenManager::showClock(uint32_t nowMs) {
+  detail::resetCompare();
+  mode_ = Mode::Clock;
+  modeStartMs_ = nowMs;
+  clockui::drawFull();
+  Serial.println("screen: overnight clock");
 }
 
 void ScreenManager::showSetup() {
@@ -151,6 +170,20 @@ void ScreenManager::update(uint32_t nowMs) {
     return;
   }
 
+  // Overnight clock: replaces the normal screens a minute after the last input, and hands
+  // back to Home when the market opens (or the setting is turned off).
+  bool wantClock = clockWanted();
+  if (mode_ == Mode::Clock && !wantClock) {
+    showHome(nowMs);
+    return;
+  }
+  bool normalScreen = mode_ == Mode::Home || mode_ == Mode::AutoDetail || mode_ == Mode::PinnedDetail ||
+                      mode_ == Mode::Sectors;
+  if (normalScreen && wantClock && nowMs - lastInputMs_ >= CLOCK_IDLE_MS) {
+    showClock(nowMs);
+    return;
+  }
+
   uint32_t elapsed = nowMs - modeStartMs_;
   switch (mode_) {
     case Mode::Home:
@@ -191,6 +224,10 @@ void ScreenManager::update(uint32_t nowMs) {
       else sectorsui::update();
       break;
 
+    case Mode::Clock:
+      clockui::update();
+      break;
+
     case Mode::Setup:
       break;   // static instructions; the Wi-Fi manager runs the hotspot
 
@@ -215,6 +252,7 @@ void ScreenManager::update(uint32_t nowMs) {
 }
 
 void ScreenManager::handleInput(const InputEvent& ev, uint32_t nowMs) {
+  lastInputMs_ = nowMs;
   scheduleWake(nowMs);   // at night, any input brings back full brightness for a while
   buzzerClick();
   handleInputAction(ev, nowMs);
@@ -260,6 +298,11 @@ void ScreenManager::handleInputAction(const InputEvent& ev, uint32_t nowMs) {
 
   if (mode_ == Mode::Settings) {
     handleSettingsInput(ev, nowMs);
+    return;
+  }
+
+  if (mode_ == Mode::Clock) {
+    showHome(nowMs);   // any input: the normal screens, until a minute without input
     return;
   }
 

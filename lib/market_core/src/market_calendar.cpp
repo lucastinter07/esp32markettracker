@@ -160,6 +160,16 @@ int32_t lastSessionDay(const EtTime& now) {
   return day;
 }
 
+bool overnightClockTime(const EtTime& now, int graceMinutes) {
+  if (marketStatus(now).phase == MarketPhase::Open) return false;
+  if (isTradingDay(now.year, now.month, now.day)) {
+    int close = isEarlyClose(now.year, now.month, now.day) ? 13 * 60 : 16 * 60;
+    int minute = now.hour * 60 + now.minute;
+    if (minute >= close && minute < close + graceMinutes) return false;
+  }
+  return true;
+}
+
 MarketStatus marketStatus(const EtTime& now) {
   MarketStatus s{};
   int32_t today = daysFromCivil(now.year, now.month, now.day);

@@ -48,6 +48,11 @@ int32_t lastSessionDay(const EtTime& now);
 // 15 minutes after its close (so data providers have published the final prices).
 int32_t lastCompletedSessionDay(const EtTime& now);
 
+// Overnight clock (8D): true while the clock screen should replace the normal screens:
+// whenever the regular session isn't open, except the first `graceMinutes` after a close
+// (so the closing prices can still be seen). Weekends and holidays count as closed.
+bool overnightClockTime(const EtTime& now, int graceMinutes);
+
 // Date helpers (also used by the tests)
 int weekdayOf(int year, int month, int day);   // 0 = Sunday ... 6 = Saturday
 void easterSunday(int year, int& month, int& day);

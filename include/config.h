@@ -6,8 +6,8 @@
 namespace cfg {
 
 // Shown on the Diagnostics screen and in the boot log. Bump it when you flash a change
-// worth telling apart (phase.patch, e.g. "7.0" = Phase 7, first build; "8.3" = 8C).
-constexpr const char* FIRMWARE_VERSION = "8.3";
+// worth telling apart (phase.patch, e.g. "7.0" = Phase 7, first build; "8.4" = 8D).
+constexpr const char* FIRMWARE_VERSION = "8.4";
 
 // ---- Display (ST7365P over SPI) ----
 // SCK 12 / MOSI 11 / MISO 13 / CS 10 are the ESP32-S3 default SPI pins,

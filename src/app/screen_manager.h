@@ -15,13 +15,15 @@ class ScreenManager {
   void update(uint32_t nowMs);   // call every loop
 
  private:
-  enum class Mode { Splash, Home, AutoDetail, PinnedDetail, Sectors, Setup, Settings, Watchlist, Diagnostics };
+  enum class Mode { Splash, Home, AutoDetail, PinnedDetail, Sectors, Clock, Setup, Settings, Watchlist, Diagnostics };
 
   void handleInput(const InputEvent& ev, uint32_t nowMs);
   void handleInputAction(const InputEvent& ev, uint32_t nowMs);
   void showHome(uint32_t nowMs);
   void showDetail(int ticker, bool pinned, uint32_t nowMs);
   void showSectors(bool pinned, uint32_t nowMs);
+  void showClock(uint32_t nowMs);
+  bool clockWanted() const;
   void showSetup();
   void updateSplash(uint32_t nowMs);
   void finishSplash(uint32_t nowMs);
@@ -45,4 +47,5 @@ class ScreenManager {
   int bannerStock_ = 0;
   detail::Page page_ = detail::Page::Day;   // which Detail page is showing
   bool sectorsAuto_ = false;   // the sector map came up in the auto cycle (times out to Home)
+  uint32_t lastInputMs_ = 0;   // the overnight clock comes back after a minute without input
 };

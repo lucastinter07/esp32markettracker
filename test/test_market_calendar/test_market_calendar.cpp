@@ -101,6 +101,23 @@ void test_last_session_day() {
   TEST_ASSERT_EQUAL(dayNumber(2026, 11, 25), lastSessionDay({2026, 11, 27, 8, 0}));
 }
 
+void test_overnight_clock_time() {
+  // Wed 2026-11-11 is a normal trading day
+  TEST_ASSERT_TRUE(overnightClockTime(EtTime{2026, 11, 11, 9, 29}, 15));    // before the open
+  TEST_ASSERT_FALSE(overnightClockTime(EtTime{2026, 11, 11, 9, 30}, 15));   // open
+  TEST_ASSERT_FALSE(overnightClockTime(EtTime{2026, 11, 11, 15, 59}, 15));
+  TEST_ASSERT_FALSE(overnightClockTime(EtTime{2026, 11, 11, 16, 0}, 15));   // just closed: grace
+  TEST_ASSERT_FALSE(overnightClockTime(EtTime{2026, 11, 11, 16, 14}, 15));
+  TEST_ASSERT_TRUE(overnightClockTime(EtTime{2026, 11, 11, 16, 15}, 15));
+  TEST_ASSERT_TRUE(overnightClockTime(EtTime{2026, 11, 11, 23, 0}, 15));
+  // Saturday, and Thanksgiving (Thu 2026-11-26): all day
+  TEST_ASSERT_TRUE(overnightClockTime(EtTime{2026, 11, 14, 12, 0}, 15));
+  TEST_ASSERT_TRUE(overnightClockTime(EtTime{2026, 11, 26, 12, 0}, 15));
+  // Early close on Fri 2026-11-27 (13:00): grace runs to 13:15
+  TEST_ASSERT_FALSE(overnightClockTime(EtTime{2026, 11, 27, 13, 5}, 15));
+  TEST_ASSERT_TRUE(overnightClockTime(EtTime{2026, 11, 27, 13, 15}, 15));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_last_session_day);
@@ -112,5 +129,6 @@ int main() {
   RUN_TEST(test_status_after_hours_opens_tomorrow);
   RUN_TEST(test_status_friday_night_opens_monday);
   RUN_TEST(test_status_holiday_and_early_close);
+  RUN_TEST(test_overnight_clock_time);
   return UNITY_END();
 }
