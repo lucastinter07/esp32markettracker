@@ -4,6 +4,7 @@
 #include <time.h>
 #include "config.h"
 #include "data/market_data.h"
+#include "data/targets.h"
 #include "data/watchlist.h"
 #include "hal/display.h"
 #include "market_calendar.h"
@@ -30,8 +31,18 @@ enum Key { KEY_DOT = 26, KEY_DEL = 27, KEY_CANCEL = 28, KEY_OK = 29, KEY_COUNT =
 
 static const uint32_t LOOKUP_TIMEOUT_MS = 45000;
 
+// Stock slot screen (8C): three tall rows (change ticker, target above, target below).
+static const int16_t SLOT_Y0 = 56, SLOT_ROW_H = 48;
+static const int SLOT_ROWS = 3;
+// Number keypad for a target: 3 rows of 4 keys (1 2 3 DEL / 4 5 6 . / 7 8 9 0), then
+// CANCEL, CLEAR and OK along the bottom.
+static const int16_t PAD_X0 = 16, PAD_PITCH = 112, PAD_W = 104, PAD_H = 44;
+static const int PAD_GRID = 12, PAD_CANCEL = 12, PAD_CLEAR = 13, PAD_OK = 14, PAD_COUNT = 15;
+static const char* const PAD_LABELS[PAD_GRID] = {"1", "2", "3", "DEL", "4", "5", "6", ".", "7", "8", "9", "0"};
+static const int PRICE_MAX_LEN = 8;   // "12345.67"
+
 // ---------- State ----------
-enum class View : uint8_t { List, Keyboard, Checking, Confirm };
+enum class View : uint8_t { List, Keyboard, Checking, Confirm, Slot, Keypad };
 static View view = View::List;
 static int listRow = 0;
 static bool resetConfirm = false;
@@ -44,6 +55,12 @@ static char message[64];
 static uint16_t messageColor = theme::LABEL;
 static uint32_t lookupStartMs = 0;
 static SymbolLookup found;                      // the answer being confirmed
+static int slotRow = 0;                         // highlighted row on the slot screen
+static bool editAbove = true;                   // which target the keypad is setting
+static char priceText[PRICE_MAX_LEN + 1];       // typed on the keypad
+static int padCursor = 0;                       // highlighted keypad key (for the buttons)
+
+static void showSlot(int stockSlot);   // defined with the slot screen below
 
 // ---------- Small helpers ----------
 static void printAt(int16_t x, int16_t y, uint8_t size, uint16_t fg, uint16_t bg, const char* s) {
@@ -366,7 +383,8 @@ static void nextIndexChoice(int k) {
 
 static void activateRow(int row) {
   if (row < cfg::NUM_TICKERS) {
-    openKeyboard(row);
+    slotRow = 0;
+    showSlot(row);
   } else if (row < NUM_SYMBOLS) {
     nextIndexChoice(row - cfg::NUM_TICKERS);
   } else if (!watchlistIsDefault()) {
@@ -377,6 +395,191 @@ static void activateRow(int row) {
       watchlistReset();
     }
   }
+}
+
+// ---------- Stock slot screen: change ticker / price targets (8C) ----------
+static void formatTarget(int stockIndex, bool above, char* out, size_t size, uint16_t& color) {
+  PriceTarget t = targetGet(stockIndex, above);
+  color = theme::TEXT;
+  if (!targetSet(t)) {
+    snprintf(out, size, "SET >");
+    color = theme::ACCENT;
+  } else if (targetArmed(t)) {
+    snprintf(out, size, "$%.2f", t.price);
+  } else {
+    int y, m, d;
+    civilFromDay(t.hitDay, y, m, d);
+    snprintf(out, size, "%.2f hit %d/%d", t.price, m, d);
+    color = theme::DIM;
+  }
+}
+
+static void drawSlotRow(int row) {
+  DFRobot_GDL& gfx = display();
+  int16_t y = SLOT_Y0 + row * SLOT_ROW_H;
+  uint16_t bg = row == slotRow ? theme::HIGHLIGHT : theme::BG;
+  gfx.fillRect(0, y, cfg::SCREEN_W, SLOT_ROW_H - 4, bg);
+  static const char* const LABELS[SLOT_ROWS] = {"Change ticker", "Alert above", "Alert below"};
+  char value[24];
+  uint16_t color = theme::ACCENT;
+  if (row == 0) snprintf(value, sizeof(value), "EDIT >");
+  else formatTarget(slot, row == 1, value, sizeof(value), color);
+  int16_t ty = y + (SLOT_ROW_H - 4 - 16) / 2;
+  printAt(16, ty, 2, theme::TEXT, bg, LABELS[row]);
+  printAt(cfg::SCREEN_W - 16 - (int16_t)strlen(value) * 12, ty, 2, color, bg, value);
+}
+
+static void currentPriceNote(char* note, size_t size) {
+  const SymbolState& s = stock(slot);
+  if (s.hasData) snprintf(note, size, "now $%.2f", s.quote.price);
+  else note[0] = '\0';
+}
+
+static void showSlot(int stockSlot) {
+  view = View::Slot;
+  slot = stockSlot;
+  DFRobot_GDL& gfx = display();
+  gfx.fillScreen(theme::BG);
+  char note[24];
+  currentPriceNote(note, sizeof(note));
+  drawHeader("< BACK", stock(slot).symbol, note);
+  for (int r = 0; r < SLOT_ROWS; r++) drawSlotRow(r);
+  printAt(16, 214, 1, theme::LABEL, theme::BG, "A target alerts once (sound + amber banner) when the price");
+  printAt(16, 226, 1, theme::LABEL, theme::BG, "reaches it during market hours, and shows on the chart.");
+  printAt(16, 238, 1, theme::LABEL, theme::BG, "Changing the ticker removes its targets.");
+}
+
+static void moveSlotRow(int to) {
+  int old = slotRow;
+  slotRow = (to + SLOT_ROWS) % SLOT_ROWS;
+  drawSlotRow(old);
+  drawSlotRow(slotRow);
+}
+
+// ---------- Number keypad for a target ----------
+static void padRect(int k, int16_t& x, int16_t& y, int16_t& w, int16_t& h) {
+  if (k < PAD_GRID) {
+    x = PAD_X0 + (k % 4) * PAD_PITCH;
+    y = KEY_Y0 + (k / 4) * KEY_ROW_PITCH;
+    w = PAD_W;
+    h = PAD_H;
+  } else {   // CANCEL, CLEAR, OK side by side
+    x = 2 + (k - PAD_CANCEL) * (BOTTOM_W + 4);
+    y = BOTTOM_Y;
+    w = BOTTOM_W;
+    h = BOTTOM_H;
+  }
+}
+
+static void drawPadKey(int k) {
+  int16_t x, y, w, h;
+  padRect(k, x, y, w, h);
+  uint16_t bg = k == padCursor ? theme::HIGHLIGHT : theme::PANEL;
+  display().fillRoundRect(x, y, w, h, 4, bg);
+  const char* label = k < PAD_GRID ? PAD_LABELS[k] : (k == PAD_CANCEL ? "CANCEL" : (k == PAD_CLEAR ? "CLEAR" : "OK"));
+  uint16_t fg = k == PAD_OK ? theme::UP : (k == PAD_CANCEL ? theme::LABEL : (k == PAD_CLEAR ? theme::DOWN : theme::TEXT));
+  printCentered(x + w / 2, y + (h - 16) / 2, 2, fg, bg, label);
+}
+
+static void drawPriceEntry() {
+  DFRobot_GDL& gfx = display();
+  gfx.fillRect(17, 51, cfg::SCREEN_W - 34, 44, theme::BG);
+  char shown[PRICE_MAX_LEN + 2];
+  snprintf(shown, sizeof(shown), "$%s", priceText);
+  printAt(28, 58, 4, theme::TEXT, theme::BG, shown);
+  if (strlen(priceText) < PRICE_MAX_LEN) {
+    gfx.fillRect(28 + (int16_t)strlen(shown) * 24, 58 + 30, 20, 3, theme::ACCENT);
+  }
+}
+
+static void showKeypad() {
+  view = View::Keypad;
+  DFRobot_GDL& gfx = display();
+  gfx.fillScreen(theme::BG);
+  char title[20], note[24];
+  snprintf(title, sizeof(title), "%s %s", stock(slot).symbol, editAbove ? "ABOVE" : "BELOW");
+  currentPriceNote(note, sizeof(note));
+  drawHeader("< CANCEL", title, note);
+  gfx.drawRect(16, 50, cfg::SCREEN_W - 32, 46, theme::FRAME);
+  drawPriceEntry();
+  drawMessage();
+  for (int k = 0; k < PAD_COUNT; k++) drawPadKey(k);
+}
+
+static void openKeypad(bool above) {
+  editAbove = above;
+  PriceTarget t = targetGet(slot, above);
+  if (targetArmed(t)) snprintf(priceText, sizeof(priceText), "%.2f", t.price);
+  else priceText[0] = '\0';
+  padCursor = 0;
+  setMessage(above ? "Alert when the price rises to this. OK saves, CLEAR removes it."
+                   : "Alert when the price falls to this. OK saves, CLEAR removes it.",
+             theme::LABEL);
+  showKeypad();
+}
+
+static int padAt(int16_t x, int16_t y) {
+  for (int k = 0; k < PAD_COUNT; k++) {
+    int16_t kx, ky, kw, kh;
+    padRect(k, kx, ky, kw, kh);
+    if (x >= kx - 2 && x < kx + kw + 2 && y >= ky - 3 && y < ky + kh + 3) return k;
+  }
+  return -1;
+}
+
+static void padMessage(const char* m, uint16_t color) {
+  setMessage(m, color);
+  drawMessage();
+}
+
+static void submitTarget() {
+  if (!priceText[0]) {
+    padMessage("Type a price first (or CLEAR to remove the target).", theme::DOWN);
+    return;
+  }
+  float v = strtof(priceText, nullptr);
+  const SymbolState& s = stock(slot);
+  float now = s.hasData ? s.quote.price : 0;
+  if (!targetValid(v, editAbove, now)) {
+    char m[64];
+    if (!(v > 0)) snprintf(m, sizeof(m), "The price must be more than 0.");
+    else snprintf(m, sizeof(m), "An %s target must be %s $%.2f.", editAbove ? "above" : "below",
+                  editAbove ? "over" : "under", now);
+    padMessage(m, theme::DOWN);
+    return;
+  }
+  targetPut(slot, editAbove, v);
+  showSlot(slot);
+}
+
+static void pressPad(int k) {
+  size_t len = strlen(priceText);
+  if (k == PAD_CANCEL) {
+    showSlot(slot);
+  } else if (k == PAD_CLEAR) {
+    targetPut(slot, editAbove, 0);
+    showSlot(slot);
+  } else if (k == PAD_OK) {
+    submitTarget();
+  } else if (strcmp(PAD_LABELS[k], "DEL") == 0) {
+    if (len > 0) priceText[len - 1] = '\0';
+    drawPriceEntry();
+  } else {
+    char c = PAD_LABELS[k][0];
+    const char* dot = strchr(priceText, '.');
+    bool tooManyDecimals = dot && (int)(len - (dot - priceText)) > 2;   // cents at most
+    if (len >= (size_t)PRICE_MAX_LEN || (c == '.' && dot) || (c != '.' && tooManyDecimals)) return;
+    priceText[len] = c;
+    priceText[len + 1] = '\0';
+    drawPriceEntry();
+  }
+}
+
+static void movePadCursor(int to) {
+  int old = padCursor;
+  padCursor = (to + PAD_COUNT) % PAD_COUNT;
+  drawPadKey(old);
+  drawPadKey(padCursor);
 }
 
 // ---------- Public ----------
@@ -447,6 +650,41 @@ Result handle(const InputEvent& ev, uint32_t nowMs) {
 
     case View::Checking:
       if (ev.type == InputType::Back || isHeaderBackTap(ev)) backToKeyboard("Check cancelled.", theme::LABEL);
+      break;
+
+    case View::Slot: {
+      int activate = -1;
+      if (ev.type == InputType::Back || isHeaderBackTap(ev)) {
+        listRow = slot;
+        showList();
+      } else if (ev.type == InputType::Prev) {
+        moveSlotRow(slotRow - 1);
+      } else if (ev.type == InputType::Next) {
+        moveSlotRow(slotRow + 1);
+      } else if (ev.type == InputType::Select) {
+        activate = slotRow;
+      } else if (ev.type == InputType::Tap && ev.y >= SLOT_Y0 && ev.y < SLOT_Y0 + SLOT_ROWS * SLOT_ROW_H) {
+        activate = (ev.y - SLOT_Y0) / SLOT_ROW_H;
+        slotRow = activate;
+      }
+      if (activate == 0) openKeyboard(slot);
+      else if (activate > 0) openKeypad(activate == 1);
+      break;
+    }
+
+    case View::Keypad:
+      if (ev.type == InputType::Back || isHeaderBackTap(ev)) {
+        showSlot(slot);
+      } else if (ev.type == InputType::Prev) {
+        movePadCursor(padCursor - 1);
+      } else if (ev.type == InputType::Next) {
+        movePadCursor(padCursor + 1);
+      } else if (ev.type == InputType::Select) {
+        pressPad(padCursor);
+      } else if (ev.type == InputType::Tap) {
+        int k = padAt(ev.x, ev.y);
+        if (k >= 0) pressPad(k);
+      }
       break;
 
     case View::Confirm: {

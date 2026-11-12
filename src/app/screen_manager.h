@@ -28,7 +28,7 @@ class ScreenManager {
   void showSettings(uint32_t nowMs, int row = 0);
   void handleSettingsInput(const InputEvent& ev, uint32_t nowMs);
   void pinIfAuto();
-  void showBanner(int stockIndex, AlertDirection dir, uint32_t nowMs);
+  void showBanner(const AlertEvent& alert, uint32_t nowMs);
   void dismissBanner(uint32_t nowMs);
   void redrawCurrent();
 

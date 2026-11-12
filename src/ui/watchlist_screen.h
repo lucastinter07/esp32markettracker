@@ -1,6 +1,7 @@
 // Settings > Watchlist: the 5 stock slots, the 2 index slots and "Reset to defaults".
-// Tapping a stock slot opens an on-screen keyboard; the typed ticker is checked with
-// Finnhub (price + company name) and only used after the user confirms it.
+// Tapping a stock slot opens its slot screen: "Change ticker" (an on-screen keyboard; the
+// typed ticker is checked with Finnhub and only used after the user confirms it) and the
+// two price targets, "Alert above" / "Alert below" (a number keypad; 8C).
 #pragma once
 #include <stdint.h>
 #include "app/input_event.h"

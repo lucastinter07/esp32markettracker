@@ -325,7 +325,8 @@ static void drawSeries(const Plot& p, const float* frac, const float* values, in
   }
 }
 
-void drawRangeChart(const SymbolState& s, const ChartBox& box, ChartRange range) {
+void drawRangeChart(const SymbolState& s, const ChartBox& box, ChartRange range, const float* marks,
+                    int markCount) {
   buildRange(s, range);
 
   DFRobot_GDL& gfx = display();
@@ -375,6 +376,17 @@ void drawRangeChart(const SymbolState& s, const ChartBox& box, ChartRange range)
     snprintf(buf, sizeof(buf), "PREV %.2f", q.prevClose);
     int16_t ly = (y - 11 >= py + 1) ? y - 11 : y + 4;   // above the line, or below near the top
     smallText(px + 4, ly, theme::LABEL, theme::BG, buf);
+  }
+
+  // ---- price targets: amber dashed lines with their value, right-aligned ----
+  for (int m = 0; m < markCount; m++) {
+    float v = marks[m];
+    if (v < ticks.lo || v > ticks.hi) continue;
+    int16_t y = toY(v);
+    for (int16_t dx = 4; dx < pw; dx += 8) gfx.drawFastHLine(px + dx, y, 4, theme::ACCENT);
+    snprintf(buf, sizeof(buf), "TARGET %.2f", v);
+    int16_t ty = (y - 11 >= py + 1) ? y - 11 : y + 4;
+    smallText(pRight - (int16_t)strlen(buf) * 6 - 3, ty, theme::ACCENT, theme::BG, buf);
   }
 
   // ---- the price line, 2 px thick, colored by the range's change ----

@@ -9,6 +9,7 @@
 #include "config.h"
 #include "data/fake_feed.h"
 #include "data/market_data.h"
+#include "data/targets.h"
 #include "data/settings.h"
 #include "data/watchlist.h"
 #include "hal/backlight.h"
@@ -38,6 +39,7 @@ void setup() {
   buzzerInit();
   watchlistInit();   // before marketDataInit(): it names the symbols
   marketDataInit();
+  targetsInit();   // after marketDataInit(): targets are matched to the slots' tickers
   storageInit();
   if (cfg::DEMO_PRICES) fakeFeedInit(now);
   else quoteClientStart();   // background task; waits for Wi-Fi by itself

@@ -18,7 +18,10 @@ struct ChartBox {
   int16_t x, y, w, h;
 };
 
-void drawRangeChart(const SymbolState& s, const ChartBox& box, ChartRange range);
+// marks: prices to show as amber dashed "TARGET" lines (8C price targets), drawn only if
+// they fall inside the price range the chart shows (they don't stretch the axis).
+void drawRangeChart(const SymbolState& s, const ChartBox& box, ChartRange range, const float* marks = nullptr,
+                    int markCount = 0);
 
 // The price the range's change is measured from: the price an hour ago (Hour), the
 // previous close (Day), the close 5 / 21 sessions back (FiveDay / Month).

@@ -32,6 +32,13 @@ void buzzerAlert(bool up) {
   }
 }
 
+// Deliberately unlike buzzerAlert's scale, so a target is recognisable by ear.
+void buzzerTarget() {
+  if (muted) return;   // targets have no separate switch: clear the target to stop them
+  static const unsigned int NOTES[] = {1568, 2093, 1568, 2093};   // G6, C7, G6, C7
+  for (unsigned int note : NOTES) tone(cfg::BUZZER_PIN, note, 90);
+}
+
 void buzzerSetMuted(bool m) {
   muted = m;
 }

@@ -3,6 +3,7 @@
 #include <string.h>
 #include "config.h"
 #include "data/market_data.h"
+#include "data/targets.h"
 #include "hal/display.h"
 #include "net/time_sync.h"
 #include "ui/price_chart.h"
@@ -208,14 +209,21 @@ static ChartRange pageRange() {
   return (ChartRange)page;   // Hour, Day, FiveDay, Month line up with ChartRange
 }
 
-static void drawBody(const SymbolState& s) {
+static void drawBody(int ticker) {
+  const SymbolState& s = stock(ticker);
   if (isChartPage()) {
     ChartBox box{4, BODY_Y, cfg::SCREEN_W - 8, BODY_H};
     if (compare) {
       drawCompareChart(s, benchmark(), box, pageRange());
       drawnBenchVersion = benchmark().version;
     } else {
-      drawRangeChart(s, box, pageRange());
+      float marks[2];   // armed price targets (8C)
+      int count = 0;
+      for (int side = 0; side < 2; side++) {
+        PriceTarget t = targetGet(ticker, side == 0);
+        if (targetArmed(t)) marks[count++] = t.price;
+      }
+      drawRangeChart(s, box, pageRange(), marks, count);
     }
   } else {
     drawStatsPage(s);
@@ -289,7 +297,7 @@ void drawFull(int ticker, bool pinned, Page newPage) {
   display().fillScreen(theme::BG);
   drawHeader(ticker, pinned);
   drawTop(stock(ticker));
-  drawBody(stock(ticker));
+  drawBody(ticker);
   drawTabs();
   drawnVersion = stock(ticker).version;
   drawnBarW = -1;
@@ -300,7 +308,7 @@ void setPage(int ticker, Page newPage) {
   page = newPage;
   display().fillRect(0, BODY_Y, cfg::SCREEN_W, BODY_H, theme::BG);
   drawTop(stock(ticker));   // the change under the price depends on the page
-  drawBody(stock(ticker));
+  drawBody(ticker);
   drawTabs();
 }
 
@@ -310,14 +318,14 @@ void update(int ticker) {
   bool benchChanged = compare && isChartPage() && benchmark().version != drawnBenchVersion;
   if (s.version == drawnVersion && !staleChanged && !benchChanged) return;
   if (s.version != drawnVersion || staleChanged) drawTop(s);
-  if (s.version != drawnVersion || benchChanged) drawBody(s);   // a stale tick alone doesn't change the body
+  if (s.version != drawnVersion || benchChanged) drawBody(ticker);   // a stale tick alone doesn't change the body
   drawnVersion = s.version;
 }
 
 void setCompare(int ticker, bool on) {
   if (on == compare) return;
   compare = on;
-  if (isChartPage()) drawBody(stock(ticker));
+  if (isChartPage()) drawBody(ticker);
 }
 
 void resetCompare() {

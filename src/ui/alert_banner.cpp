@@ -8,11 +8,11 @@
 
 namespace banner {
 
-void draw(int stockIndex, AlertDirection dir) {
+void draw(const AlertEvent& alert) {
   DFRobot_GDL& gfx = display();
-  const SymbolState& s = stock(stockIndex);
-  bool up = dir == AlertDirection::Up;
-  uint16_t bg = up ? theme::UP : theme::DOWN;
+  const SymbolState& s = stock(alert.stockIndex);
+  bool up = alert.dir == AlertDirection::Up;
+  uint16_t bg = alert.target ? theme::ACCENT : (up ? theme::UP : theme::DOWN);
   gfx.fillRect(0, 0, cfg::SCREEN_W, HEIGHT, bg);
 
   // Arrow pointing the way the price moved
@@ -20,8 +20,12 @@ void draw(int stockIndex, AlertDirection dir) {
   else gfx.fillTriangle(10, 8, 24, 8, 17, 22, theme::BG);
 
   char text[48];
-  snprintf(text, sizeof(text), "%s %s %.2f%% today, $%.2f", s.symbol, up ? "up" : "down",
-           fabsf(s.quote.changePct), s.quote.price);
+  if (alert.target) {
+    snprintf(text, sizeof(text), "%s hit %.2f, now $%.2f", s.symbol, alert.targetPrice, s.quote.price);
+  } else {
+    snprintf(text, sizeof(text), "%s %s %.2f%% today, $%.2f", s.symbol, up ? "up" : "down",
+             fabsf(s.quote.changePct), s.quote.price);
+  }
   gfx.setTextSize(2);
   gfx.setTextColor(theme::BG, bg);
   gfx.setCursor(34, 8);

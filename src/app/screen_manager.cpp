@@ -136,11 +136,10 @@ void ScreenManager::update(uint32_t nowMs) {
 
   // Price alerts: the buzzer already sounded; show a banner on Home / Detail. (On other
   // screens, e.g. Settings, the sound is the only notice.)
-  int alertStock;
-  AlertDirection alertDir;
-  if (alertsTake(alertStock, alertDir) &&
+  AlertEvent alert;
+  if (alertsTake(alert) &&
       (mode_ == Mode::Home || mode_ == Mode::AutoDetail || mode_ == Mode::PinnedDetail || mode_ == Mode::Sectors)) {
-    showBanner(alertStock, alertDir, nowMs);
+    showBanner(alert, nowMs);
   }
   uint32_t loopGap = nowMs - lastUpdateMs_;
   lastUpdateMs_ = nowMs;
@@ -404,11 +403,11 @@ void ScreenManager::handleSettingsInput(const InputEvent& ev, uint32_t nowMs) {
   settingsui::update(settingsRow_);
 }
 
-void ScreenManager::showBanner(int stockIndex, AlertDirection dir, uint32_t nowMs) {
+void ScreenManager::showBanner(const AlertEvent& alert, uint32_t nowMs) {
   bannerShown_ = true;
-  bannerStock_ = stockIndex;
+  bannerStock_ = alert.stockIndex;
   bannerUntilMs_ = nowMs + BANNER_MS;
-  banner::draw(stockIndex, dir);
+  banner::draw(alert);
 }
 
 void ScreenManager::dismissBanner(uint32_t nowMs) {

@@ -4,6 +4,7 @@
 #include "config.h"
 #include "data/market_data.h"
 #include "data/settings.h"
+#include "data/targets.h"
 #include "hal/buzzer.h"
 #include "market_calendar.h"
 #include "net/time_sync.h"
@@ -13,11 +14,15 @@ static AlertState states[cfg::NUM_TICKERS];
 static char stateSymbol[cfg::NUM_TICKERS][SYMBOL_MAX_LEN + 1];   // ticker the state belongs to
 static uint32_t checkedVersion[cfg::NUM_TICKERS];
 static bool pending = false;
-static int pendingIndex = 0;
-static AlertDirection pendingDir = AlertDirection::None;
+static AlertEvent pendingEvent;
+
+static void raise(const AlertEvent& ev) {
+  pending = true;
+  pendingEvent = ev;
+}
 
 void alertsUpdate() {
-  if (cfg::DEMO_PRICES || settings().alertPercent == 0 || !marketIsOpenNow()) return;
+  if (cfg::DEMO_PRICES || !marketIsOpenNow()) return;
   EtTime now;
   if (!timeNowET(now)) return;
   int32_t today = dayNumber(now.year, now.month, now.day);
@@ -30,6 +35,20 @@ void alertsUpdate() {
       strcpy(stateSymbol[i], s.symbol);
       states[i] = AlertState();
     }
+
+    // Price target (8C)
+    bool above;
+    float targetPrice;
+    if (targetsCheck(i, s.quote.price, today, above, targetPrice)) {
+      Serial.printf("alert: %s reached its %s target %.2f (now %.2f)\n", s.symbol, above ? "above" : "below",
+                    targetPrice, s.quote.price);
+      buzzerTarget();
+      raise(AlertEvent{i, above ? AlertDirection::Up : AlertDirection::Down, true, targetPrice});
+      continue;   // one alert per quote is enough; the daily move is checked on the next one
+    }
+
+    // Daily move (6G)
+    if (settings().alertPercent == 0 && cfg::ALERT_TEST_PERCENT <= 0) continue;
     float threshold = cfg::ALERT_TEST_PERCENT > 0 ? cfg::ALERT_TEST_PERCENT : settings().alertPercent;
     AlertDirection dir = checkAlert(states[i], s.quote.changePct, threshold, today);
     if (dir == AlertDirection::None) continue;
@@ -38,16 +57,13 @@ void alertsUpdate() {
     Serial.printf("alert: %s %s %.2f%% (threshold %.1f%%)\n", s.symbol, up ? "up" : "down",
                   s.quote.changePct, threshold);
     buzzerAlert(up);
-    pending = true;
-    pendingIndex = i;
-    pendingDir = dir;
+    raise(AlertEvent{i, dir, false, 0});
   }
 }
 
-bool alertsTake(int& stockIndex, AlertDirection& dir) {
+bool alertsTake(AlertEvent& out) {
   if (!pending) return false;
   pending = false;
-  stockIndex = pendingIndex;
-  dir = pendingDir;
+  out = pendingEvent;
   return true;
 }
