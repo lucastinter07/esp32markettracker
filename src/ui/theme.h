@@ -17,6 +17,12 @@ constexpr uint16_t STAT_LABEL = ACCENT;  // labels on the detail screen's stats 
 constexpr uint16_t GRID      = 0x31A6;  // #303430: faint chart gridlines
 constexpr uint16_t FRAME     = 0x52AA;  // #505450: chart border
 
+// Sector heat map tiles: neutral grey at 0 %, full green / red at +/- cfg::SECTOR_SATURATE_PCT.
+// Dark enough that white text stays readable on every shade.
+constexpr uint16_t HEAT_NEUTRAL = 0x2144;  // #262A26
+constexpr uint16_t HEAT_UP      = 0x03C6;  // #007A33
+constexpr uint16_t HEAT_DOWN    = 0xB123;  // #B3261E
+
 inline uint16_t changeColor(float change) {
   return change >= 0 ? UP : DOWN;
 }

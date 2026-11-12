@@ -1,6 +1,7 @@
 // Decides which screen is showing. Starts on the splash screen until the first prices are in.
-// Runs the Home (30 s) -> Detail (20 s: chart, then stats) auto cycle,
-// pins a Detail screen when the user picks a ticker, and turns InputEvents into actions.
+// Runs the Home (30 s) -> Detail (20 s: chart, then stats) auto cycle, with the sector map
+// once per round (after the last stock), pins a Detail screen when the user picks a ticker,
+// and turns InputEvents into actions. Tapping Home's index bar opens the sector map.
 // Holding BACK for 2 s (or tapping the menu icon on Home) opens Settings.
 #pragma once
 #include <stdint.h>
@@ -14,12 +15,13 @@ class ScreenManager {
   void update(uint32_t nowMs);   // call every loop
 
  private:
-  enum class Mode { Splash, Home, AutoDetail, PinnedDetail, Setup, Settings, Watchlist, Diagnostics };
+  enum class Mode { Splash, Home, AutoDetail, PinnedDetail, Sectors, Setup, Settings, Watchlist, Diagnostics };
 
   void handleInput(const InputEvent& ev, uint32_t nowMs);
   void handleInputAction(const InputEvent& ev, uint32_t nowMs);
   void showHome(uint32_t nowMs);
   void showDetail(int ticker, bool pinned, uint32_t nowMs);
+  void showSectors(bool pinned, uint32_t nowMs);
   void showSetup();
   void updateSplash(uint32_t nowMs);
   void finishSplash(uint32_t nowMs);
@@ -42,4 +44,5 @@ class ScreenManager {
   uint32_t lastUpdateMs_ = 0;
   int bannerStock_ = 0;
   detail::Page page_ = detail::Page::Day;   // which Detail page is showing
+  bool sectorsAuto_ = false;   // the sector map came up in the auto cycle (times out to Home)
 };

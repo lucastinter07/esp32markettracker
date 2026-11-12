@@ -4,6 +4,7 @@
 #include <string.h>
 #include "config.h"
 #include "data/market_data.h"
+#include "data/sectors.h"
 #include "market_calendar.h"
 #include "net/time_sync.h"
 
@@ -16,6 +17,8 @@
 //   profiles.bin:     magic "MTP1", same layout with the Profile struct
 //   history.bin:      magic "MTH1", same layout with the History struct (backfill)
 //   earnings.bin:     magic "MTE1", same layout with the Earnings struct
+//   sectors.bin:      magic "MTS1", count (uint8), then per sector ETF (and SPY):
+//                     name (8 bytes), SectorQuote struct (raw bytes)
 // Symbols are matched by name, so changing the watchlist doesn't scramble saved data.
 static const uint32_t MAGIC_INTRADAY = 0x3249544D;   // the bytes "MTI2"
 static const uint32_t MAGIC_FUNDAMENTALS = 0x3146544D;   // "MTF1"
@@ -27,6 +30,8 @@ static const char* FUNDAMENTALS_PATH = "/fundamentals.bin";
 static const char* PROFILES_PATH = "/profiles.bin";
 static const char* HISTORY_PATH = "/history.bin";
 static const char* EARNINGS_PATH = "/earnings.bin";
+static const uint32_t MAGIC_SECTORS = 0x3153544D;        // "MTS1"
+static const char* SECTORS_PATH = "/sectors.bin";
 static const int NAME_LEN = 8;
 
 static bool mounted = false;
@@ -223,6 +228,50 @@ void storageSaveEarnings() {
   saveRecords(EARNINGS_PATH, MAGIC_EARNINGS, &SymbolState::earnings);
 }
 
+// ---------- sector heat map ----------
+// The latest quote per sector ETF, so the map shows the last close right after a restart
+// while the market is closed (no new quotes until the boot pass gets through).
+
+void storageSaveSectors() {
+  if (!mounted || cfg::DEMO_PRICES) return;
+  File f = LittleFS.open("/sectors.tmp", "w");
+  if (!f) return;
+  uint8_t count = NUM_SECTOR_QUOTES;
+  f.write((const uint8_t*)&MAGIC_SECTORS, 4);
+  f.write(&count, 1);
+  for (int i = 0; i < NUM_SECTOR_QUOTES; i++) {
+    writeName(f, sectorSymbol(i));
+    f.write((const uint8_t*)&sectorQuote(i), sizeof(SectorQuote));
+  }
+  f.close();
+  replaceFile("/sectors.tmp", SECTORS_PATH);
+}
+
+static int loadSectors() {
+  if (!fileExists(SECTORS_PATH)) return 0;
+  File f = LittleFS.open(SECTORS_PATH, "r");
+  if (!f) return 0;
+  uint32_t magic = 0;
+  uint8_t count = 0;
+  f.read((uint8_t*)&magic, 4);
+  f.read(&count, 1);
+  int loaded = 0;
+  for (int k = 0; magic == MAGIC_SECTORS && k < count; k++) {
+    char name[NAME_LEN];
+    SectorQuote q;
+    if (f.read((uint8_t*)name, NAME_LEN) != NAME_LEN) break;
+    if (f.read((uint8_t*)&q, sizeof(q)) != sizeof(q)) break;
+    for (int i = 0; i < NUM_SECTOR_QUOTES; i++) {
+      if (strncmp(sectorSymbol(i), name, NAME_LEN) == 0) {
+        sectorsRestore(i, q);
+        loaded++;
+      }
+    }
+  }
+  f.close();
+  return loaded;
+}
+
 // ---------- public ----------
 
 void storageInit() {
@@ -242,8 +291,9 @@ void storageUpdate(uint32_t nowMs) {
     int names = loadRecords(PROFILES_PATH, MAGIC_PROFILES, &SymbolState::profile);
     int history = loadRecords(HISTORY_PATH, MAGIC_HISTORY, &SymbolState::history);
     loadRecords(EARNINGS_PATH, MAGIC_EARNINGS, &SymbolState::earnings);
-    Serial.printf("storage: restored names %d, stats %d, history %d (of %d stocks)\n", names, stats,
-                  history, cfg::NUM_TICKERS);
+    int sectors = loadSectors();
+    Serial.printf("storage: restored names %d, stats %d, history %d (of %d stocks), sectors %d\n", names,
+                  stats, history, cfg::NUM_TICKERS, sectors);
     restored = true;
   }
 
@@ -280,9 +330,10 @@ static uint32_t fileSize(const char* path) {
 }
 
 void storageInfo(StorageInfo& out) {
-  static const char* const NAMES[STORAGE_FILES] = {"chart", "stats", "names", "history", "earnings"};
+  // Short names: the whole list shares one 80-character line on the Diagnostics screen.
+  static const char* const NAMES[STORAGE_FILES] = {"chart", "stats", "names", "hist", "earn", "sect"};
   static const char* const PATHS[STORAGE_FILES] = {INTRADAY_PATH, FUNDAMENTALS_PATH, PROFILES_PATH,
-                                                   HISTORY_PATH, EARNINGS_PATH};
+                                                   HISTORY_PATH, EARNINGS_PATH, SECTORS_PATH};
   out.mounted = mounted;
   out.usedBytes = mounted ? LittleFS.usedBytes() : 0;
   out.totalBytes = mounted ? LittleFS.totalBytes() : 0;

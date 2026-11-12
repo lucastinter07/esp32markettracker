@@ -15,6 +15,7 @@
 #include "ui/alert_banner.h"
 #include "ui/diag_screen.h"
 #include "ui/home_screen.h"
+#include "ui/sector_screen.h"
 #include "ui/settings_screen.h"
 #include "ui/splash_screen.h"
 #include "ui/watchlist_screen.h"
@@ -102,6 +103,14 @@ void ScreenManager::showDetail(int ticker, bool pinned, uint32_t nowMs) {
   Serial.printf("screen: detail %d (%s)\n", ticker, pinned ? "pinned" : "auto");
 }
 
+void ScreenManager::showSectors(bool pinned, uint32_t nowMs) {
+  mode_ = Mode::Sectors;
+  modeStartMs_ = nowMs;
+  sectorsAuto_ = !pinned;
+  sectorsui::drawFull();
+  Serial.printf("screen: sectors (%s)\n", pinned ? "pinned" : "auto");
+}
+
 void ScreenManager::update(uint32_t nowMs) {
   InputEvent ev;
   while (inputGet(ev)) handleInput(ev, nowMs);
@@ -129,7 +138,7 @@ void ScreenManager::update(uint32_t nowMs) {
   int alertStock;
   AlertDirection alertDir;
   if (alertsTake(alertStock, alertDir) &&
-      (mode_ == Mode::Home || mode_ == Mode::AutoDetail || mode_ == Mode::PinnedDetail)) {
+      (mode_ == Mode::Home || mode_ == Mode::AutoDetail || mode_ == Mode::PinnedDetail || mode_ == Mode::Sectors)) {
     showBanner(alertStock, alertDir, nowMs);
   }
   uint32_t loopGap = nowMs - lastUpdateMs_;
@@ -157,7 +166,9 @@ void ScreenManager::update(uint32_t nowMs) {
     case Mode::AutoDetail: {
       uint32_t detailMs = cycleDetailMs();
       if (elapsed >= detailMs) {
-        showHome(nowMs);
+        // After the last stock, the sector map once, then the next round starts at Home.
+        if (ticker_ == cfg::NUM_TICKERS - 1) showSectors(false, nowMs);
+        else showHome(nowMs);
       } else {
         // Halfway through, turn to the stats page.
         if (page_ != detail::Page::Stats && elapsed >= detailMs / 2) {
@@ -172,6 +183,12 @@ void ScreenManager::update(uint32_t nowMs) {
 
     case Mode::PinnedDetail:
       detail::update(ticker_);   // no timeout: stays until BACK
+      break;
+
+    case Mode::Sectors:
+      // In the auto cycle it stays as long as Home does; opened by hand, until BACK.
+      if (sectorsAuto_ && elapsed >= cycleHomeMs()) showHome(nowMs);
+      else sectorsui::update();
       break;
 
     case Mode::Setup:
@@ -274,6 +291,8 @@ void ScreenManager::handleInputAction(const InputEvent& ev, uint32_t nowMs) {
         }
         if (home::isMenuTap(ev.x, ev.y)) {
           showSettings(nowMs);
+        } else if (home::isIndexBarTap(ev.x, ev.y)) {
+          showSectors(true, nowMs);
         } else if (row >= 0) {
           highlight_ = row;
           page_ = detail::Page::Day;
@@ -283,6 +302,18 @@ void ScreenManager::handleInputAction(const InputEvent& ev, uint32_t nowMs) {
       }
       case InputType::Back:
       case InputType::LongBack: break;
+    }
+    return;
+  }
+
+  if (mode_ == Mode::Sectors) {
+    if (ev.type == InputType::Back) {
+      showHome(nowMs);
+    } else if (ev.type == InputType::Tap && home::isMenuTap(ev.x, ev.y)) {   // same status bar as Home
+      showSettings(nowMs);
+    } else if (sectorsAuto_) {
+      sectorsAuto_ = false;   // the user is looking: stay until BACK
+      Serial.println("screen: sectors (pinned)");
     }
     return;
   }
@@ -385,6 +416,7 @@ void ScreenManager::dismissBanner(uint32_t nowMs) {
 // Repaints the current Home / Detail screen (after the banner covered part of it).
 void ScreenManager::redrawCurrent() {
   if (mode_ == Mode::Home) home::drawFull(highlight_);
+  else if (mode_ == Mode::Sectors) sectorsui::drawFull();
   else if (mode_ == Mode::AutoDetail || mode_ == Mode::PinnedDetail) detail::drawFull(ticker_, mode_ == Mode::PinnedDetail, page_);
 }
 

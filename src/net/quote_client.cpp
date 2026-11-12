@@ -6,6 +6,7 @@
 #include <WiFiClientSecure.h>
 #include "config.h"
 #include "data/market_data.h"
+#include "data/sectors.h"
 #include "market_calendar.h"
 #include "metrics_parser.h"
 #include "net/finnhub_ca.h"
@@ -35,10 +36,10 @@ static const uint32_t TD_GAP_MS = 8000;                // Twelve Data free plan:
 static const uint32_t HISTORY_RETRY_MS = 600000;       // after a failed history download
 
 // One message from the background task to the main loop.
-enum class MsgKind : uint8_t { Quote, NewSession, Metrics, Profile, Earnings };
+enum class MsgKind : uint8_t { Quote, NewSession, Metrics, Profile, Earnings, Sector };
 struct QuoteMsg {
   MsgKind kind;
-  int8_t index;        // symbol number
+  int8_t index;        // symbol number (for Sector: the sector number, see data/sectors.h)
   uint8_t gen;         // the slot's generation when fetched (a changed ticker drops old results)
   bool addToHistory;   // only quotes taken while the market is open become chart points
   uint32_t fetchedAt;  // unix seconds when the quote was fetched: its time on the chart
@@ -401,6 +402,42 @@ static void fetchDueEarnings(HTTPClient& http, WiFiClientSecure& tls, int32_t to
   Serial.println(earningsDue == 0 ? "quotes: earnings dates updated" : "quotes: earnings dates incomplete, will retry");
 }
 
+// ---------- sector heat map ----------
+// The 11 sector ETFs + SPY are fetched as one "pass", lowest number first, SPY last.
+// Bit k of the pending mask = sector k still to fetch in this pass. Only the task uses it.
+
+static const uint16_t ALL_SECTORS = (uint16_t)((1u << NUM_SECTOR_QUOTES) - 1);
+
+static int firstSector(uint16_t pending) {
+  for (int k = 0; k < NUM_SECTOR_QUOTES; k++) {
+    if ((pending >> k) & 1u) return k;
+  }
+  return -1;
+}
+
+// Fetches sector k and sends it to the main loop. Crossed off on success (or if Finnhub
+// doesn't know the symbol); otherwise it stays pending and is retried after a pause.
+static void fetchSector(int k, uint16_t& pending) {
+  QuoteMsg msg{};
+  msg.kind = MsgKind::Sector;
+  msg.index = (int8_t)k;
+  msg.fetchedAt = (uint32_t)time(nullptr);
+  Fetch r = fetchQuote(http, tls, sectorSymbol(k), msg.quote);
+  if (r == Fetch::Ok) {
+    sendToMainLoop(msg);
+    lastQuoteOkMs = millis();
+  }
+  if (r == Fetch::Ok || r == Fetch::UnknownSymbol) {
+    pending &= (uint16_t)~(1u << k);
+    taskWait(CLOSED_PASS_GAP_MS);
+  } else if (r == Fetch::RateLimited) {
+    status = FeedStatus::RateLimited;
+    taskWait(RATE_LIMIT_BACKOFF_MS);
+  } else {
+    taskWait(ERROR_RETRY_MS);   // bad key / network: the stock quotes report it
+  }
+}
+
 // ---------- Twelve Data history backfill ----------
 
 // One CSV request. Twelve Data answers errors as JSON with an HTTP error code.
@@ -483,6 +520,9 @@ static void quoteTask(void*) {
   uint32_t earningsRetryAt = 0;
   uint32_t historyRetryAt = 0;
   bool historyJustRan = false;      // during the session, alternate history and quotes
+  uint16_t sectorPending = ALL_SECTORS;   // the heat map's boot pass
+  uint32_t sectorPassAt = 0;        // while open, the next sector pass starts at this millis()
+  bool sectorJustRan = false;       // while open, alternate sector and stock quotes
   int next = 0;
 
   for (;;) {
@@ -513,6 +553,7 @@ static void quoteTask(void*) {
       }
       if (lastOpen == 1 && !open) {
         for (bool& f : fetched) f = false;               // fetch final prices once more,
+        sectorPending = ALL_SECTORS;                     // (sectors too)
         passAllowedAt = millis() + CLOSE_PASS_DELAY_MS;  // after the closing prints settle
       }
       lastOpen = open ? 1 : 0;
@@ -595,13 +636,29 @@ static void quoteTask(void*) {
       if (!open) passAllowedAt = millis();
     }
 
+    // Sector heat map while open: a pass every SECTOR_REFRESH_S, one sector between each
+    // stock quote, so the stocks keep their pace. A new ticker's first price goes first.
+    if (open && sectorPending == 0 && (int32_t)(millis() - sectorPassAt) >= 0) sectorPending = ALL_SECTORS;
+    if (open && priority < 0 && sectorPending && !sectorJustRan) {
+      int k = firstSector(sectorPending);
+      if (k == 0) sectorPassAt = millis() + cfg::SECTOR_REFRESH_S * 1000;   // a pass starts
+      fetchSector(k, sectorPending);
+      sectorJustRan = true;
+      continue;
+    }
+    sectorJustRan = false;
+
     if (!open) {
       int i = 0;
       while (i < NUM_SYMBOLS && fetched[i]) i++;
       bool passDone = i == NUM_SYMBOLS;
       bool mustWait = (int32_t)(millis() - passAllowedAt) < 0;   // safe across millis() wrap
+      if (passDone && sectorPending && !mustWait) {   // stocks first, then the sectors
+        fetchSector(firstSector(sectorPending), sectorPending);
+        continue;
+      }
       if (passDone || mustWait) {
-        if (passDone) status = FeedStatus::Idle;
+        if (passDone && !sectorPending) status = FeedStatus::Idle;
         taskWait(IDLE_CHECK_MS);
         continue;
       }
@@ -779,6 +836,11 @@ void quoteClientStart() {
 void quoteClientApply(uint32_t nowMs) {
   QuoteMsg msg;
   while (queue && xQueueReceive(queue, &msg, 0) == pdTRUE) {
+    if (msg.kind == MsgKind::Sector) {
+      sectorsApply(msg.index, msg.quote, msg.fetchedAt);
+      if (msg.index == BENCHMARK_INDEX) storageSaveSectors();   // SPY comes last: a pass is complete
+      continue;
+    }
     // Fetched for a ticker that has since been replaced in that slot: ignore it.
     if (msg.kind != MsgKind::NewSession && msg.gen != symbolGeneration(msg.index)) continue;
     switch (msg.kind) {
@@ -808,6 +870,8 @@ void quoteClientApply(uint32_t nowMs) {
         storageSaveEarnings();
         break;
       }
+      case MsgKind::Sector:
+        break;   // handled above
     }
   }
   // static: a HistoryMsg is ~800 bytes, too big to put on the loop's stack every pass

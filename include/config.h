@@ -6,8 +6,8 @@
 namespace cfg {
 
 // Shown on the Diagnostics screen and in the boot log. Bump it when you flash a change
-// worth telling apart (phase.patch, e.g. "7.0" = Phase 7, first build).
-constexpr const char* FIRMWARE_VERSION = "7.0";
+// worth telling apart (phase.patch, e.g. "7.0" = Phase 7, first build; "8.1" = 8A).
+constexpr const char* FIRMWARE_VERSION = "8.1";
 
 // ---- Display (ST7365P over SPI) ----
 // SCK 12 / MOSI 11 / MISO 13 / CS 10 are the ESP32-S3 default SPI pins,
@@ -62,6 +62,28 @@ constexpr int NUM_INDEX_CHOICES = 4;
 constexpr const char* INDEX_CHOICE_SYMBOLS[NUM_INDEX_CHOICES] = {"SPY", "QQQ", "DIA", "IWM"};
 constexpr const char* INDEX_CHOICE_LABELS[NUM_INDEX_CHOICES]  = {"S&P 500", "NASDAQ", "DOW", "RUSSELL 2000"};
 constexpr uint8_t DEFAULT_INDEX_CHOICES[NUM_INDEXES] = {0, 1};   // SPY, QQQ
+
+// ---- Sector heat map (Phase 8A) ----
+// The 11 SPDR sector ETFs, LARGEST S&P 500 WEIGHT FIRST (the treemap layout needs that
+// order; a native test checks it). Weights are each sector's % of the S&P 500 as of
+// 2026-10-31: they drift slowly, so check them about once a year. They only set the tile
+// sizes in the SIZED layout. SPY is fetched with them as the benchmark.
+constexpr int NUM_SECTORS = 11;
+constexpr const char* SECTOR_SYMBOLS[NUM_SECTORS] = {"XLK", "XLF", "XLV", "XLY", "XLC", "XLI",
+                                                     "XLP", "XLE", "XLU", "XLRE", "XLB"};
+constexpr const char* SECTOR_NAMES[NUM_SECTORS] = {"Technology",  "Financials",    "Health Care", "Cons. Discr.",
+                                                   "Comm. Svcs",  "Industrials",   "Cons. Staples", "Energy",
+                                                   "Utilities",   "Real Estate",   "Materials"};
+constexpr float SECTOR_WEIGHTS[NUM_SECTORS] = {36.1f, 12.6f, 10.0f, 9.8f, 8.9f, 7.9f,
+                                               5.5f,  3.8f,  2.0f,  1.8f, 1.7f};
+constexpr const char* BENCHMARK_SYMBOL = "SPY";
+// Every sector gets at least this share of the map, so the small ones stay readable.
+constexpr float SECTOR_MIN_WEIGHT = 3.0f;
+// Tile colors reach full green / red at this daily move.
+constexpr float SECTOR_SATURATE_PCT = 3.0f;
+// While the market is open, all 12 (sectors + SPY) are refreshed this often, slotted in
+// between the stock quotes: about 860 extra requests (~1 MB of data) a trading day.
+constexpr uint32_t SECTOR_REFRESH_S = 300;
 
 // Testing aid for price alerts: > 0 replaces the Settings threshold (e.g. 0.1 %, so the
 // first live quote of any stock that moved fires one). Alerts must still be ON in Settings.

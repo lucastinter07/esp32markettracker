@@ -3,10 +3,11 @@
 #include <Preferences.h>
 #include "config.h"
 
-// Saved as one block of bytes. Version 2 added the cycle options at the end of the struct;
-// a version-1 block is shorter and simply fills the fields it had. A future change that
-// isn't "add fields at the end" must bump the version and drop older blocks.
-static const uint8_t SETTINGS_VERSION = 2;
+// Saved as one block of bytes. Version 2 added the cycle options at the end of the struct,
+// version 3 the sector map layout and overnight clock; an older block is shorter and simply
+// fills the fields it had. A future change that isn't "add fields at the end" must bump the
+// version and drop older blocks.
+static const uint8_t SETTINGS_VERSION = 3;
 
 static Settings current;
 static Preferences prefs;
@@ -16,7 +17,7 @@ void settingsInit() {
   uint8_t version = prefs.getUChar("version", 0);
   size_t length = prefs.getBytesLength("data");
   Settings saved;   // starts with the defaults
-  bool ok = (version == 1 || version == SETTINGS_VERSION) && length > 0 && length <= sizeof(saved) &&
+  bool ok = version >= 1 && version <= SETTINGS_VERSION && length > 0 && length <= sizeof(saved) &&
             prefs.getBytes("data", &saved, length) == length;
   prefs.end();
   if (ok) current = saved;

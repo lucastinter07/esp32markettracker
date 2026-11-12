@@ -188,4 +188,9 @@ bool isMenuTap(int16_t x, int16_t y) {
   return x < 40 && y < theme::HEADER_H;   // a bit wider than the icon, easier to hit
 }
 
+bool isIndexBarTap(int16_t x, int16_t y) {
+  (void)x;
+  return y >= theme::FOOTER_Y;
+}
+
 }  // namespace home

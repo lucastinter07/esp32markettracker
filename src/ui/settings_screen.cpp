@@ -15,17 +15,18 @@ static const int ROWS_PER_PAGE = 7;
 static const int16_t PAGER_Y = 282, PAGER_H = 36;   // page buttons along the bottom
 static const int16_t PAGER_W = 150;
 
+// Page 1 = what the screen shows, page 2 = alerts, sound and system (reorganized in 8A).
 enum Row {
   // page 1
-  WATCHLIST, AUTO_CYCLE, CYCLE_SPEED, ALERTS, CLICKS, CHIME, BRIGHTNESS,
+  WATCHLIST, AUTO_CYCLE, CYCLE_SPEED, SECTOR_MAP, OVERNIGHT_CLOCK, BRIGHTNESS, NIGHT_DIM,
   // page 2
-  NIGHT_DIM, NIGHT_HOURS, WIFI, DIAGNOSTICS, REFRESH, RESTART,
+  ALERTS, CLICKS, CHIME, WIFI, DIAGNOSTICS, REFRESH, RESTART,
   ROW_COUNT
 };
 static const char* const LABELS[ROW_COUNT] = {
-    "Watchlist",     "Auto cycle",    "Cycle speed", "Price alerts", "Click sounds",     "Open/close chime",
-    "Brightness",    "Night dimming", "Night hours", "Wi-Fi setup",  "Diagnostics",      "Re-download data",
-    "Restart device",
+    "Watchlist",    "Auto cycle",   "Cycle speed",      "Sector map",  "Overnight clock", "Brightness",
+    "Night dimming", "Price alerts", "Click sounds",    "Open/close chime", "Wi-Fi setup", "Diagnostics",
+    "Re-download data", "Restart device",
 };
 static const int PAGE_COUNT = (ROW_COUNT + ROWS_PER_PAGE - 1) / ROWS_PER_PAGE;
 
@@ -67,8 +68,12 @@ static void valueText(int row, char* buf, size_t size) {
     case CLICKS:      snprintf(buf, size, st.clickSounds ? "ON" : "OFF"); break;
     case CHIME:       snprintf(buf, size, st.chime ? "ON" : "OFF"); break;
     case BRIGHTNESS:  snprintf(buf, size, "%d%%", st.brightness); break;
-    case NIGHT_DIM:   snprintf(buf, size, st.nightDim ? "ON" : "OFF"); break;
-    case NIGHT_HOURS: snprintf(buf, size, "%02d:00-%02d:00", st.nightStart, st.nightEnd); break;
+    case SECTOR_MAP:  snprintf(buf, size, st.sectorMap == SECTOR_MAP_GRID ? "GRID" : "SIZED"); break;
+    case OVERNIGHT_CLOCK: snprintf(buf, size, st.overnightClock ? "ON" : "OFF"); break;
+    case NIGHT_DIM:   // one row for on/off and the hours: OFF or e.g. "22:00-07:00"
+      if (st.nightDim) snprintf(buf, size, "%02d:00-%02d:00", st.nightStart, st.nightEnd);
+      else snprintf(buf, size, "OFF");
+      break;
     case WIFI:        snprintf(buf, size, confirming ? "Tap again" : "Start"); break;
     case DIAGNOSTICS: snprintf(buf, size, "VIEW >"); break;
     case REFRESH:     snprintf(buf, size, confirming ? "Tap again" : "~1 MB"); break;
@@ -210,7 +215,8 @@ Action activate(int row, uint32_t nowMs) {
     case CYCLE_SPEED: st.cycleSpeed = (st.cycleSpeed + 1) % 3; break;
     case CLICKS:      st.clickSounds = !st.clickSounds; break;
     case CHIME:       st.chime = !st.chime; break;
-    case NIGHT_DIM:   st.nightDim = !st.nightDim; break;
+    case SECTOR_MAP:  st.sectorMap = st.sectorMap == SECTOR_MAP_GRID ? SECTOR_MAP_SIZED : SECTOR_MAP_GRID; break;
+    case OVERNIGHT_CLOCK: st.overnightClock = !st.overnightClock; break;
     case ALERTS:
       i = indexOf(ALERT_STEPS, sizeof(ALERT_STEPS), st.alertPercent);
       st.alertPercent = ALERT_STEPS[(i + 1) % sizeof(ALERT_STEPS)];
@@ -220,13 +226,21 @@ Action activate(int row, uint32_t nowMs) {
       st.brightness = BRIGHTNESS_STEPS[(i + 1) % sizeof(BRIGHTNESS_STEPS)];
       // app/schedule applies it on the next loop (capped during night hours, unless awake)
       break;
-    case NIGHT_HOURS: {
+    case NIGHT_DIM: {
+      // OFF -> first preset -> ... -> last preset -> OFF
       int count = sizeof(NIGHT_PRESETS) / sizeof(NIGHT_PRESETS[0]);
       int current = -1;
       for (int k = 0; k < count; k++) {
         if (NIGHT_PRESETS[k][0] == st.nightStart && NIGHT_PRESETS[k][1] == st.nightEnd) current = k;
       }
-      int next = (current + 1) % count;
+      if (!st.nightDim) {
+        st.nightDim = true;
+        current = -1;   // start from the first preset
+      } else if (current == count - 1) {
+        st.nightDim = false;
+        break;
+      }
+      int next = current + 1;
       st.nightStart = NIGHT_PRESETS[next][0];
       st.nightEnd = NIGHT_PRESETS[next][1];
       break;
