@@ -89,6 +89,7 @@ void ScreenManager::showSettings(uint32_t nowMs, int row) {
 }
 
 void ScreenManager::showHome(uint32_t nowMs) {
+  detail::resetCompare();   // leaving Detail: the next one opens on the normal chart
   mode_ = Mode::Home;
   modeStartMs_ = nowMs;
   home::drawFull(highlight_);
@@ -330,6 +331,10 @@ void ScreenManager::handleInputAction(const InputEvent& ev, uint32_t nowMs) {
     int step = ev.type == InputType::Next ? 1 : -1;
     highlight_ = wrap(ticker_ + step);
     showDetail(highlight_, true, nowMs);   // keeps the current page
+  } else if (ev.type == InputType::Tap && tab < 0 && detail::isChartTap(ev.x, ev.y)) {
+    // A tap on the chart switches between the price chart and "vs SPY" in %.
+    detail::setCompare(ticker_, !detail::compareOn());
+    pinIfAuto();
   } else if (tab >= 0 || ev.type == InputType::Select) {
     // A tab picks its page; SELECT steps to the next one (1H > 1D > 5D > 1M > STATS > 1H).
     if (tab >= 0) page_ = (detail::Page)tab;

@@ -20,4 +20,11 @@ void setPinned(bool pinned);             // swaps the AUTO / PINNED badge
 bool isBackTap(int16_t x, int16_t y);
 int tabAt(int16_t x, int16_t y);         // the Page a tap hit in the tab bar, or -1
 
+// Compare vs SPY (8B): the chart pages show the stock and SPY as % change. Stays on across
+// tabs and stocks; the screen manager turns it off when leaving the Detail screen.
+void setCompare(int ticker, bool on);    // redraws the chart if it changed
+void resetCompare();                     // off, without drawing (the screen is being left)
+bool compareOn();
+bool isChartTap(int16_t x, int16_t y);   // a tap on the chart (which toggles compare)
+
 }  // namespace detail

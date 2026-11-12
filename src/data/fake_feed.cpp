@@ -28,6 +28,7 @@ static void step(int i, uint32_t nowMs) {
   q.high = s.hasData ? max(s.quote.high, price) : price;
   q.low = s.hasData ? min(s.quote.low, price) : price;
   s.applyQuote(q, nowMs);
+  if (i >= cfg::NUM_TICKERS && strcmp(s.symbol, cfg::BENCHMARK_SYMBOL) == 0) benchmark().applyQuote(q, nowMs);
 }
 
 // Sector map: a random daily change per sector ETF, nudged a little on each update.

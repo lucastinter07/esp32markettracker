@@ -59,6 +59,32 @@ void test_series_keeps_times() {
   TEST_ASSERT_FALSE(s.hasTimes());
 }
 
+void test_rebase_to_percent() {
+  float v[] = {100.0f, 102.0f, 97.5f};
+  TEST_ASSERT_TRUE(rebaseToPercent(v, 3, 100.0f));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, v[0]);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 2.0f, v[1]);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, -2.5f, v[2]);
+  // Rebasing a stock and SPY to the same start makes them comparable: +2 % vs +0.5 %.
+  float spy[] = {580.0f, 582.9f};
+  TEST_ASSERT_TRUE(rebaseToPercent(spy, 2, 580.0f));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 1.5f, v[1] - spy[1]);
+}
+
+void test_rebase_needs_a_reference() {
+  float v[] = {5.0f};
+  TEST_ASSERT_FALSE(rebaseToPercent(v, 1, 0.0f));
+  TEST_ASSERT_EQUAL_FLOAT(5.0f, v[0]);
+}
+
+void test_percent_decimals() {
+  TEST_ASSERT_EQUAL(0, percentDecimals(1.0f));
+  TEST_ASSERT_EQUAL(0, percentDecimals(2.5f));
+  TEST_ASSERT_EQUAL(1, percentDecimals(0.5f));
+  TEST_ASSERT_EQUAL(1, percentDecimals(0.1f));
+  TEST_ASSERT_EQUAL(2, percentDecimals(0.05f));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_nice_axis_round_steps);
@@ -67,5 +93,8 @@ int main() {
   RUN_TEST(test_label_decimals);
   RUN_TEST(test_map_to_pixel_both_directions);
   RUN_TEST(test_series_keeps_times);
+  RUN_TEST(test_rebase_to_percent);
+  RUN_TEST(test_rebase_needs_a_reference);
+  RUN_TEST(test_percent_decimals);
   return UNITY_END();
 }

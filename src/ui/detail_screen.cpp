@@ -28,7 +28,9 @@ static const int16_t STAT_COL_W = 220;
 static const int16_t STAT_Y = 118, STAT_ROW_H = 28;   // 6 rows: the last ends at y 274, above the tabs
 
 static Page page = Page::Day;
+static bool compare = false;          // chart pages show the stock vs SPY in % (8B)
 static uint32_t drawnVersion = 0;
+static uint32_t drawnBenchVersion = 0;   // SPY's version when the compare chart was drawn
 static int drawnStaleMin = -1;   // minutes since the last quote when stale, -1 when fresh
 static int16_t drawnBarW = -1;
 
@@ -208,7 +210,13 @@ static ChartRange pageRange() {
 
 static void drawBody(const SymbolState& s) {
   if (isChartPage()) {
-    drawRangeChart(s, ChartBox{4, BODY_Y, cfg::SCREEN_W - 8, BODY_H}, pageRange());
+    ChartBox box{4, BODY_Y, cfg::SCREEN_W - 8, BODY_H};
+    if (compare) {
+      drawCompareChart(s, benchmark(), box, pageRange());
+      drawnBenchVersion = benchmark().version;
+    } else {
+      drawRangeChart(s, box, pageRange());
+    }
   } else {
     drawStatsPage(s);
   }
@@ -299,10 +307,30 @@ void setPage(int ticker, Page newPage) {
 void update(int ticker) {
   const SymbolState& s = stock(ticker);
   bool staleChanged = staleMinutes(s) != drawnStaleMin;
-  if (s.version == drawnVersion && !staleChanged) return;
-  drawTop(s);
-  if (s.version != drawnVersion) drawBody(s);   // a stale tick alone doesn't change the body
+  bool benchChanged = compare && isChartPage() && benchmark().version != drawnBenchVersion;
+  if (s.version == drawnVersion && !staleChanged && !benchChanged) return;
+  if (s.version != drawnVersion || staleChanged) drawTop(s);
+  if (s.version != drawnVersion || benchChanged) drawBody(s);   // a stale tick alone doesn't change the body
   drawnVersion = s.version;
+}
+
+void setCompare(int ticker, bool on) {
+  if (on == compare) return;
+  compare = on;
+  if (isChartPage()) drawBody(stock(ticker));
+}
+
+void resetCompare() {
+  compare = false;
+}
+
+bool compareOn() {
+  return compare;
+}
+
+bool isChartTap(int16_t x, int16_t y) {
+  (void)x;
+  return isChartPage() && y >= BODY_Y && y < BODY_Y + BODY_H;
 }
 
 void drawCountdown(float remaining) {

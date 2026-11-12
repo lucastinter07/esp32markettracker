@@ -7,6 +7,7 @@
 
 static SymbolState stocks[cfg::NUM_TICKERS];
 static SymbolState indexes[cfg::NUM_INDEXES];
+static SymbolState benchmarkState;
 
 // Each SymbolState::symbol points into this, so a slot can be renamed at runtime.
 static char names[NUM_SYMBOLS][SYMBOL_MAX_LEN + 1];
@@ -19,6 +20,11 @@ void marketDataInit() {
     names[i][SYMBOL_MAX_LEN] = '\0';
     symbolByIndex(i).symbol = names[i];
   }
+  benchmarkState.symbol = cfg::BENCHMARK_SYMBOL;
+}
+
+SymbolState& benchmark() {
+  return benchmarkState;
 }
 
 SymbolState& stock(int i) {

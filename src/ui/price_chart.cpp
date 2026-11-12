@@ -1,5 +1,6 @@
 #include "ui/price_chart.h"
 #include <Arduino.h>
+#include <math.h>
 #include <string.h>
 #include <time.h>
 #include "chart_math.h"
@@ -262,7 +263,7 @@ static int16_t clampI(int16_t v, int16_t lo, int16_t hi) {
   return v < lo ? lo : (v > hi ? hi : v);
 }
 
-void drawRangeChart(const SymbolState& s, const ChartBox& box, ChartRange range) {
+static void buildRange(const SymbolState& s, ChartRange range) {
   resetData();
   switch (range) {
     case ChartRange::Hour:    buildHour(s); break;
@@ -270,25 +271,74 @@ void drawRangeChart(const SymbolState& s, const ChartBox& box, ChartRange range)
     case ChartRange::FiveDay: buildFiveDay(s); break;
     case ChartRange::Month:   buildMonth(s); break;
   }
+}
+
+// The plotted area inside a chart box, leaving room for the labels.
+struct Plot {
+  int16_t px, py, pw, ph, pRight, pBottom;
+  explicit Plot(const ChartBox& box)
+      : px(box.x + 2), py(box.y + 4), pw(box.w - LABEL_W - 4), ph(box.h - TIME_H - 6),
+        pRight(px + pw - 1), pBottom(py + ph - 1) {}
+  int16_t toX(float frac) const { return (int16_t)(px + frac * (pw - 1)); }
+};
+
+// Frame plus data.empty1/2 in the middle, when there's nothing to plot.
+static void drawEmpty(const Plot& p) {
+  DFRobot_GDL& gfx = display();
+  gfx.drawRect(p.px - 1, p.py - 1, p.pw + 2, p.ph + 2, theme::FRAME);
+  gfx.setTextSize(2);
+  gfx.setTextColor(theme::LABEL, theme::BG);
+  gfx.setCursor(p.px + p.pw / 2 - (int16_t)strlen(data.empty1) * 6, p.py + p.ph / 2 - 18);
+  gfx.print(data.empty1);
+  gfx.setCursor(p.px + p.pw / 2 - (int16_t)strlen(data.empty2) * 6, p.py + p.ph / 2 + 4);
+  gfx.print(data.empty2);
+}
+
+// Labels underneath with faint vertical gridlines, brighter lines between days, the
+// frame, and the older-session date tag.
+static void drawXAxis(const Plot& p) {
+  DFRobot_GDL& gfx = display();
+  for (int i = 0; i < data.labels; i++) {
+    int16_t x = p.toX(data.labelFrac[i]);
+    if (data.separators == 0) gfx.drawFastVLine(x, p.py, p.ph, theme::GRID);
+    int16_t w = strlen(data.labelText[i]) * 6;
+    smallText(clampI(x - w / 2, p.px, p.pRight - w), p.pBottom + 5, theme::LABEL, theme::BG, data.labelText[i]);
+  }
+  for (int i = 0; i < data.separators; i++) gfx.drawFastVLine(p.toX(data.separatorFrac[i]), p.py, p.ph, theme::FRAME);
+  gfx.drawRect(p.px - 1, p.py - 1, p.pw + 2, p.ph + 2, theme::FRAME);
+  if (data.cornerTag[0]) {
+    smallText(p.pRight - (int16_t)strlen(data.cornerTag) * 6 - 3, p.py + 3, theme::ACCENT, theme::BG, data.cornerTag);
+  }
+}
+
+// A line through data points, 2 px thick if `thick`.
+static void drawSeries(const Plot& p, const float* frac, const float* values, int n, float lo, float hi,
+                       uint16_t color, bool thick) {
+  DFRobot_GDL& gfx = display();
+  int16_t prevX = p.toX(frac[0]), prevY = mapToPixel(values[0], lo, hi, p.pBottom, p.py);
+  for (int i = 1; i < n; i++) {
+    int16_t x = p.toX(frac[i]), y = mapToPixel(values[i], lo, hi, p.pBottom, p.py);
+    gfx.drawLine(prevX, prevY, x, y, color);
+    if (thick) gfx.drawLine(prevX, prevY + 1, x, y + 1, color);
+    prevX = x;
+    prevY = y;
+  }
+}
+
+void drawRangeChart(const SymbolState& s, const ChartBox& box, ChartRange range) {
+  buildRange(s, range);
 
   DFRobot_GDL& gfx = display();
   const Quote& q = s.quote;
-  // The plotted area, inside the box, leaving room for the labels.
-  const int16_t px = box.x + 2, py = box.y + 4;
-  const int16_t pw = box.w - LABEL_W - 4, ph = box.h - TIME_H - 6;
-  const int16_t pRight = px + pw - 1, pBottom = py + ph - 1;
-  auto toX = [&](float frac) { return (int16_t)(px + frac * (pw - 1)); };
+  const Plot plot(box);
+  const int16_t px = plot.px, py = plot.py, pw = plot.pw, ph = plot.ph;
+  const int16_t pRight = plot.pRight, pBottom = plot.pBottom;
+  auto toX = [&](float frac) { return plot.toX(frac); };
 
   gfx.fillRect(box.x, box.y, box.w, box.h, theme::BG);
 
   if (data.n < 2) {
-    gfx.drawRect(px - 1, py - 1, pw + 2, ph + 2, theme::FRAME);
-    gfx.setTextSize(2);
-    gfx.setTextColor(theme::LABEL, theme::BG);
-    gfx.setCursor(px + pw / 2 - (int16_t)strlen(data.empty1) * 6, py + ph / 2 - 18);
-    gfx.print(data.empty1);
-    gfx.setCursor(px + pw / 2 - (int16_t)strlen(data.empty2) * 6, py + ph / 2 + 4);
-    gfx.print(data.empty2);
+    drawEmpty(plot);
     return;
   }
 
@@ -316,20 +366,7 @@ void drawRangeChart(const SymbolState& s, const ChartBox& box, ChartRange range)
     smallText(pRight + 6, y - 3, theme::LABEL, theme::BG, buf);
   }
 
-  // ---- labels underneath, with faint vertical gridlines; brighter lines between days ----
-  for (int i = 0; i < data.labels; i++) {
-    int16_t x = toX(data.labelFrac[i]);
-    if (data.separators == 0) gfx.drawFastVLine(x, py, ph, theme::GRID);
-    int16_t w = strlen(data.labelText[i]) * 6;
-    smallText(clampI(x - w / 2, px, pRight - w), pBottom + 5, theme::LABEL, theme::BG, data.labelText[i]);
-  }
-  for (int i = 0; i < data.separators; i++) gfx.drawFastVLine(toX(data.separatorFrac[i]), py, ph, theme::FRAME);
-
-  gfx.drawRect(px - 1, py - 1, pw + 2, ph + 2, theme::FRAME);
-
-  if (data.cornerTag[0]) {
-    smallText(pRight - (int16_t)strlen(data.cornerTag) * 6 - 3, py + 3, theme::ACCENT, theme::BG, data.cornerTag);
-  }
+  drawXAxis(plot);
 
   // ---- previous close (1D only): dashed line with its value ----
   if (prevLine) {
@@ -345,14 +382,7 @@ void drawRangeChart(const SymbolState& s, const ChartBox& box, ChartRange range)
   float last = data.price[data.n - 1];
   bool up = rangeReference(s, range, ref) ? last >= ref : last >= data.price[0];
   uint16_t color = up ? theme::UP : theme::DOWN;
-  int16_t prevX = toX(data.frac[0]), prevY = toY(data.price[0]);
-  for (int i = 1; i < data.n; i++) {
-    int16_t x = toX(data.frac[i]), y = toY(data.price[i]);
-    gfx.drawLine(prevX, prevY, x, y, color);
-    gfx.drawLine(prevX, prevY + 1, x, y + 1, color);
-    prevX = x;
-    prevY = y;
-  }
+  drawSeries(plot, data.frac, data.price, data.n, ticks.lo, ticks.hi, color, true);
 
   // ---- high / low over the range: small triangles pointing at them, with values ----
   int iMax = 0, iMin = 0;
@@ -409,4 +439,101 @@ const char* rangeName(ChartRange range) {
     case ChartRange::Month:   return "1M";
   }
   return "";
+}
+
+// ---------- compare vs SPY (8B) ----------
+
+// Turns the chart points into % change from the range's reference price (the one the
+// change under the price uses), or from the first point if there's no reference yet.
+static bool toPercent(const SymbolState& s, ChartRange range, float* values, int n) {
+  float ref;
+  if (!rangeReference(s, range, ref)) ref = values[0];
+  return rebaseToPercent(values, n, ref);
+}
+
+bool compareFigures(const SymbolState& s, const SymbolState& bench, ChartRange range, float& stockPct,
+                    float& benchPct) {
+  float refS, refB;
+  if (!rangeReference(s, range, refS) || !rangeReference(bench, range, refB) || !bench.hasData) return false;
+  stockPct = (s.quote.price / refS - 1.0f) * 100.0f;
+  benchPct = (bench.quote.price / refB - 1.0f) * 100.0f;
+  return true;
+}
+
+void drawCompareChart(const SymbolState& s, const SymbolState& bench, const ChartBox& box, ChartRange range) {
+  // SPY first, its points put aside; then the stock, whose time labels the chart keeps.
+  static float benchFrac[MAX_POINTS];
+  static float benchPct[MAX_POINTS];
+  buildRange(bench, range);
+  int benchN = data.n;
+  memcpy(benchFrac, data.frac, sizeof(float) * benchN);
+  memcpy(benchPct, data.price, sizeof(float) * benchN);
+  bool haveBench = benchN >= 2 && toPercent(bench, range, benchPct, benchN);
+  buildRange(s, range);
+
+  DFRobot_GDL& gfx = display();
+  const Plot plot(box);
+  gfx.fillRect(box.x, box.y, box.w, box.h, theme::BG);
+  if (data.n < 2) {
+    drawEmpty(plot);
+    return;
+  }
+  toPercent(s, range, data.price, data.n);
+
+  // % axis covering both lines and 0 %
+  float lo = 0, hi = 0;
+  for (int i = 0; i < data.n; i++) {
+    if (data.price[i] < lo) lo = data.price[i];
+    if (data.price[i] > hi) hi = data.price[i];
+  }
+  for (int i = 0; haveBench && i < benchN; i++) {
+    if (benchPct[i] < lo) lo = benchPct[i];
+    if (benchPct[i] > hi) hi = benchPct[i];
+  }
+  AxisTicks ticks = niceAxis(lo, hi, MAX_PRICE_LABELS);
+  int decimals = percentDecimals(ticks.step);
+  char buf[48];
+  for (int k = 0; k < ticks.count; k++) {
+    float v = ticks.lo + k * ticks.step;
+    int16_t y = mapToPixel(v, ticks.lo, ticks.hi, plot.pBottom, plot.py);
+    gfx.drawFastHLine(plot.px, y, plot.pw, theme::GRID);
+    if (fabsf(v) < ticks.step / 2) snprintf(buf, sizeof(buf), "0%%");
+    else snprintf(buf, sizeof(buf), "%+.*f%%", decimals, v);
+    smallText(plot.pRight + 6, y - 3, theme::LABEL, theme::BG, buf);
+  }
+  drawXAxis(plot);
+
+  // 0 % = the reference price: dashed, like the previous-close line
+  int16_t zeroY = mapToPixel(0, ticks.lo, ticks.hi, plot.pBottom, plot.py);
+  for (int16_t dx = 0; dx < plot.pw; dx += 8) gfx.drawFastHLine(plot.px + dx, zeroY, 4, theme::LABEL);
+
+  // SPY thin and grey underneath, the stock on top in its color
+  if (haveBench) drawSeries(plot, benchFrac, benchPct, benchN, ticks.lo, ticks.hi, theme::LABEL, false);
+  float last = data.price[data.n - 1];
+  uint16_t color = theme::changeColor(last);
+  drawSeries(plot, data.frac, data.price, data.n, ticks.lo, ticks.hi, color, true);
+
+  // Legend, top left: "NVDA +2.10%  SPY +0.90%  +1.20% vs SPY"
+  int16_t x = plot.px + 4, y = plot.py + 3;
+  float stockPct, spyPct;
+  if (compareFigures(s, bench, range, stockPct, spyPct)) {
+    snprintf(buf, sizeof(buf), "%s %+.2f%%", s.symbol, stockPct);
+    smallText(x, y, color, theme::BG, buf);
+    x += (int16_t)strlen(buf) * 6 + 12;
+    snprintf(buf, sizeof(buf), "%s %+.2f%%", bench.symbol, spyPct);
+    smallText(x, y, theme::LABEL, theme::BG, buf);
+    x += (int16_t)strlen(buf) * 6 + 12;
+    float rel = stockPct - spyPct;
+    snprintf(buf, sizeof(buf), "%+.2f%% vs %s", rel, bench.symbol);
+    smallText(x, y, theme::changeColor(rel), theme::BG, buf);
+  } else {
+    snprintf(buf, sizeof(buf), "%s vs %s: waiting for %s data", s.symbol, bench.symbol, bench.symbol);
+    smallText(x, y, theme::LABEL, theme::BG, buf);
+  }
+
+  // The stock's last value as a tag in the label column
+  int16_t tagY = clampI(mapToPixel(last, ticks.lo, ticks.hi, plot.pBottom, plot.py) - 6, box.y, plot.pBottom - 6);
+  gfx.fillRect(plot.pRight + 3, tagY, LABEL_W - 1, 12, color);
+  snprintf(buf, sizeof(buf), "%+.*f%%", decimals < 1 ? 1 : decimals, last);
+  smallText(plot.pRight + 6, tagY + 2, theme::BG, color, buf);
 }

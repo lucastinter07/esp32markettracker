@@ -47,3 +47,15 @@ int16_t mapToPixel(float value, float lo, float hi, int16_t pixelLo, int16_t pix
   float fraction = (value - lo) / (hi - lo);
   return (int16_t)lroundf(pixelLo + fraction * (pixelHi - pixelLo));
 }
+
+bool rebaseToPercent(float* values, int count, float reference) {
+  if (!(reference > 0)) return false;
+  for (int i = 0; i < count; i++) values[i] = (values[i] / reference - 1.0f) * 100.0f;
+  return true;
+}
+
+int percentDecimals(float step) {
+  if (step >= 0.999f) return 0;
+  if (step >= 0.0999f) return 1;
+  return 2;
+}

@@ -17,6 +17,7 @@
 //   profiles.bin:     magic "MTP1", same layout with the Profile struct
 //   history.bin:      magic "MTH1", same layout with the History struct (backfill)
 //   earnings.bin:     magic "MTE1", same layout with the Earnings struct
+//   The benchmark (SPY for compare charts) is saved in intraday/history files as "=SPY".
 //   sectors.bin:      magic "MTS1", count (uint8), then per sector ETF (and SPY):
 //                     name (8 bytes), SectorQuote struct (raw bytes)
 // Symbols are matched by name, so changing the watchlist doesn't scramble saved data.
@@ -48,7 +49,21 @@ static void writeName(File& f, const char* symbol) {
   f.write((const uint8_t*)name, NAME_LEN);
 }
 
+// SPY's compare-chart data (8B) is saved under its own name, so it never mixes with an
+// "SPY" index slot's record.
+static const char* const BENCH_NAME = "=SPY";
+static const int SAVED_COUNT = NUM_SYMBOLS + 1;   // the watchlist symbols, then the benchmark
+
+static SymbolState& savedSymbol(int i) {
+  return i < NUM_SYMBOLS ? symbolByIndex(i) : benchmark();
+}
+
+static const char* savedName(int i) {
+  return i < NUM_SYMBOLS ? symbolByIndex(i).symbol : BENCH_NAME;
+}
+
 static SymbolState* findSymbol(const char* name) {
+  if (strncmp(name, BENCH_NAME, NAME_LEN) == 0) return &benchmark();
   for (int i = 0; i < NUM_SYMBOLS; i++) {
     if (strncmp(symbolByIndex(i).symbol, name, NAME_LEN) == 0) return &symbolByIndex(i);
   }
@@ -82,7 +97,7 @@ static void replaceFile(const char* tmpPath, const char* path) {
 static uint32_t versionSum() {
   uint32_t sum = 0;
   for (int i = 0; i < NUM_SYMBOLS; i++) sum += symbolByIndex(i).version;
-  return sum;
+  return sum + benchmark().version;
 }
 
 // ---------- chart points ----------
@@ -90,20 +105,20 @@ static uint32_t versionSum() {
 static void saveIntraday(int32_t sessionDay) {
   File f = LittleFS.open("/intraday.tmp", "w");
   if (!f) return;
-  uint8_t count = NUM_SYMBOLS;
+  uint8_t count = SAVED_COUNT;
   f.write((const uint8_t*)&MAGIC_INTRADAY, 4);
   f.write((const uint8_t*)&sessionDay, 4);
   f.write(&count, 1);
   static float points[PriceSeries::CAPACITY];   // static: 1.5 KB each is too much for the stack
   static uint32_t times[PriceSeries::CAPACITY];
-  for (int i = 0; i < NUM_SYMBOLS; i++) {
-    const PriceSeries& series = symbolByIndex(i).intraday;
+  for (int i = 0; i < SAVED_COUNT; i++) {
+    const PriceSeries& series = savedSymbol(i).intraday;
     uint16_t n = series.size();
     for (uint16_t k = 0; k < n; k++) {
       points[k] = series.at(k);
       times[k] = series.timeAt(k);
     }
-    writeName(f, symbolByIndex(i).symbol);
+    writeName(f, savedName(i));
     f.write((const uint8_t*)&n, 2);
     f.write((const uint8_t*)points, n * sizeof(float));
     f.write((const uint8_t*)times, n * sizeof(uint32_t));
@@ -164,12 +179,12 @@ static void saveRecords(const char* path, uint32_t magic, T SymbolState::*field)
   String tmpPath = String(path) + ".tmp";
   File f = LittleFS.open(tmpPath, "w");
   if (!f) return;
-  uint8_t count = NUM_SYMBOLS;
+  uint8_t count = SAVED_COUNT;
   f.write((const uint8_t*)&magic, 4);
   f.write(&count, 1);
-  for (int i = 0; i < NUM_SYMBOLS; i++) {
-    writeName(f, symbolByIndex(i).symbol);
-    f.write((const uint8_t*)&(symbolByIndex(i).*field), sizeof(T));
+  for (int i = 0; i < SAVED_COUNT; i++) {
+    writeName(f, savedName(i));
+    f.write((const uint8_t*)&(savedSymbol(i).*field), sizeof(T));
   }
   f.close();
   replaceFile(tmpPath.c_str(), path);

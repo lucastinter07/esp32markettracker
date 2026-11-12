@@ -20,3 +20,10 @@ int labelDecimals(float step, float largestValue);
 // Where a value lands on a pixel range: lo maps to pixelLo, hi to pixelHi.
 // Works in either direction, so screen y (which counts down) is pixelLo = bottom.
 int16_t mapToPixel(float value, float lo, float hi, int16_t pixelLo, int16_t pixelHi);
+
+// Compare-vs-SPY charts (8B): turns prices into % change from `reference` (the price the
+// range is measured from), in place. False (values untouched) if reference isn't positive.
+bool rebaseToPercent(float* values, int count, float reference);
+
+// Decimals for % axis labels: whole percents for steps of 1 % or more, else 1 or 2.
+int percentDecimals(float step);

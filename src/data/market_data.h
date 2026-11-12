@@ -12,6 +12,12 @@ SymbolState& stock(int i);      // 0 .. cfg::NUM_TICKERS-1
 SymbolState& indexEtf(int i);   // 0 .. cfg::NUM_INDEXES-1
 SymbolState& symbolByIndex(int i);   // 0 .. NUM_SYMBOLS-1, stocks then index ETFs
 
+// SPY (cfg::BENCHMARK_SYMBOL), always tracked for the compare-vs-SPY charts (8B), whether
+// or not it's one of the index slots. Not part of symbolByIndex(). Its chart points come from
+// the sector passes (every 5 min) and, when SPY is an index slot, from that slot's quotes;
+// its history from Twelve Data like a stock's.
+SymbolState& benchmark();
+
 // True when the market is open and this symbol hasn't updated for cfg::STALE_AFTER_S.
 // marketOpen is passed in so a screen can check it once and reuse it for every row.
 bool isStale(const SymbolState& s, uint32_t nowMs, bool marketOpen);

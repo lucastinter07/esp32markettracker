@@ -119,6 +119,7 @@ static volatile uint8_t metricsDue = 0;    // company stats
 static volatile uint8_t profilesDue = 0;   // company names
 static volatile uint8_t earningsDue = 0;   // earnings dates
 static volatile uint8_t historyDue = 0;    // Twelve Data backfill
+static volatile bool benchmarkHistoryDue = false;   // the same for SPY (compare charts, 8B)
 static volatile uint8_t quoteDue = 0;      // a slot got a new ticker: price it next (all symbols)
 static bool recheckRequested = false;      // main loop: re-run the "what's missing" checks now
 
@@ -417,10 +418,11 @@ static int firstSector(uint16_t pending) {
 
 // Fetches sector k and sends it to the main loop. Crossed off on success (or if Finnhub
 // doesn't know the symbol); otherwise it stays pending and is retried after a pause.
-static void fetchSector(int k, uint16_t& pending) {
+static void fetchSector(int k, uint16_t& pending, bool open) {
   QuoteMsg msg{};
   msg.kind = MsgKind::Sector;
   msg.index = (int8_t)k;
+  msg.addToHistory = open;   // SPY's quote is also a point on the compare chart
   msg.fetchedAt = (uint32_t)time(nullptr);
   Fetch r = fetchQuote(http, tls, sectorSymbol(k), msg.quote);
   if (r == Fetch::Ok) {
@@ -601,23 +603,31 @@ static void quoteTask(void*) {
 
     // History backfill: one stock per pass. While the market is open, a quote runs
     // between each stock, so prices keep updating (just more slowly) during the backfill.
-    if (historyDue && haveTime && historyTurn && (int32_t)(millis() - historyRetryAt) >= 0) {
+    // The stocks first, then SPY (index -1 in the message).
+    if ((historyDue || benchmarkHistoryDue) && haveTime && historyTurn && (int32_t)(millis() - historyRetryAt) >= 0) {
       HistoryMsg hmsg{};
-      int i = firstDue(historyDue);
+      int i = historyDue ? firstDue(historyDue) : -1;
       hmsg.index = (int8_t)i;
       char symbol[SYMBOL_MAX_LEN + 1];
-      hmsg.gen = symbolSnapshot(i, symbol);
+      if (i >= 0) {
+        hmsg.gen = symbolSnapshot(i, symbol);
+      } else {
+        strncpy(symbol, cfg::BENCHMARK_SYMBOL, SYMBOL_MAX_LEN);
+        symbol[SYMBOL_MAX_LEN] = '\0';
+      }
       Fetch r = fetchHistory(tdHttp, tdTls, symbol, lastCompletedSessionDay(now), hmsg.history);
       if (r == Fetch::Ok) xQueueSend(historyQueue, &hmsg, portMAX_DELAY);
       if (r == Fetch::Ok || r == Fetch::UnknownSymbol) {
-        clearDueIf(historyDue, i, hmsg.gen);
+        if (i >= 0) clearDueIf(historyDue, i, hmsg.gen);
+        else benchmarkHistoryDue = false;
       } else if (r == Fetch::BadKey) {
         Serial.println("quotes: Twelve Data rejected its API key (check .env, then rebuild)");
         historyDue = 0;
+        benchmarkHistoryDue = false;
       } else {
         historyRetryAt = millis() + (r == Fetch::RateLimited ? RATE_LIMIT_BACKOFF_MS : HISTORY_RETRY_MS);
       }
-      if (historyDue == 0) {
+      if (historyDue == 0 && !benchmarkHistoryDue) {
         Serial.println("quotes: price history updated");
         if (!gapDue) tdTls.stop();   // free the Twelve Data connection's memory
       }
@@ -642,7 +652,7 @@ static void quoteTask(void*) {
     if (open && priority < 0 && sectorPending && !sectorJustRan) {
       int k = firstSector(sectorPending);
       if (k == 0) sectorPassAt = millis() + cfg::SECTOR_REFRESH_S * 1000;   // a pass starts
-      fetchSector(k, sectorPending);
+      fetchSector(k, sectorPending, true);
       sectorJustRan = true;
       continue;
     }
@@ -654,7 +664,7 @@ static void quoteTask(void*) {
       bool passDone = i == NUM_SYMBOLS;
       bool mustWait = (int32_t)(millis() - passAllowedAt) < 0;   // safe across millis() wrap
       if (passDone && sectorPending && !mustWait) {   // stocks first, then the sectors
-        fetchSector(firstSector(sectorPending), sectorPending);
+        fetchSector(firstSector(sectorPending), sectorPending, false);
         continue;
       }
       if (passDone || mustWait) {
@@ -733,6 +743,7 @@ static void requestDataIfDue(uint32_t nowMs) {
       if (TWELVEDATA_API_KEY[0] != '\0') markDue(historyDue, i);
     }
     for (int i = 0; i < NUM_SYMBOLS; i++) markDue(quoteDue, i);
+    if (TWELVEDATA_API_KEY[0] != '\0') benchmarkHistoryDue = true;
     recheckRequested = true;   // and redo the chart-hole check
     Serial.println("quotes: re-downloading everything (Settings)");
   }
@@ -803,6 +814,8 @@ static void requestDataIfDue(uint32_t nowMs) {
       const History& h = stock(i).history;
       if (!h.valid || h.throughDay < completed) markDue(historyDue, i);
     }
+    const History& bh = benchmark().history;
+    if (!bh.valid || bh.throughDay < completed) benchmarkHistoryDue = true;
   }
 
   // Stats: need the stock's price first (to work out the share count), so a stock without
@@ -833,11 +846,24 @@ void quoteClientStart() {
   xTaskCreatePinnedToCore(quoteTask, "quotes", TASK_STACK_BYTES, nullptr, 1, nullptr, 0);
 }
 
+static bool spyIsIndexSlot() {
+  for (int i = 0; i < cfg::NUM_INDEXES; i++) {
+    if (strcmp(indexEtf(i).symbol, cfg::BENCHMARK_SYMBOL) == 0) return true;
+  }
+  return false;
+}
+
 void quoteClientApply(uint32_t nowMs) {
   QuoteMsg msg;
   while (queue && xQueueReceive(queue, &msg, 0) == pdTRUE) {
     if (msg.kind == MsgKind::Sector) {
       sectorsApply(msg.index, msg.quote, msg.fetchedAt);
+      if (msg.index == BENCHMARK_INDEX) {
+        // When SPY is also an index slot, its 60 s quotes already give the chart points
+        // (adding these too would overflow the day's 390-point buffer): numbers only.
+        bool points = msg.addToHistory && !spyIsIndexSlot();
+        benchmark().applyQuote(msg.quote, nowMs, points, msg.fetchedAt);
+      }
       if (msg.index == BENCHMARK_INDEX) storageSaveSectors();   // SPY comes last: a pass is complete
       continue;
     }
@@ -849,10 +875,18 @@ void quoteClientApply(uint32_t nowMs) {
           symbolByIndex(i).intraday.clear();
           symbolByIndex(i).version++;   // so the screens redraw the now-empty charts
         }
+        benchmark().intraday.clear();
+        benchmark().version++;
         break;
-      case MsgKind::Quote:
-        symbolByIndex(msg.index).applyQuote(msg.quote, nowMs, msg.addToHistory, msg.fetchedAt);
+      case MsgKind::Quote: {
+        SymbolState& s = symbolByIndex(msg.index);
+        s.applyQuote(msg.quote, nowMs, msg.addToHistory, msg.fetchedAt);
+        // SPY as an index slot: its minute-by-minute quotes also feed the compare charts.
+        if (msg.index >= cfg::NUM_TICKERS && strcmp(s.symbol, cfg::BENCHMARK_SYMBOL) == 0) {
+          benchmark().applyQuote(msg.quote, nowMs, msg.addToHistory, msg.fetchedAt);
+        }
         break;
+      }
       case MsgKind::Metrics:
         symbolByIndex(msg.index).applyMetrics(msg.metrics, msg.day);
         storageSaveFundamentals();
@@ -877,8 +911,8 @@ void quoteClientApply(uint32_t nowMs) {
   // static: a HistoryMsg is ~800 bytes, too big to put on the loop's stack every pass
   static HistoryMsg hmsg;
   while (historyQueue && xQueueReceive(historyQueue, &hmsg, 0) == pdTRUE) {
-    if (hmsg.gen != symbolGeneration(hmsg.index)) continue;
-    SymbolState& s = symbolByIndex(hmsg.index);
+    if (hmsg.index >= 0 && hmsg.gen != symbolGeneration(hmsg.index)) continue;
+    SymbolState& s = hmsg.index >= 0 ? symbolByIndex(hmsg.index) : benchmark();
     s.history = hmsg.history;
     s.version++;
     storageSaveHistory();

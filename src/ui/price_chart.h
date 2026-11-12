@@ -25,5 +25,13 @@ void drawRangeChart(const SymbolState& s, const ChartBox& box, ChartRange range)
 // False if there isn't enough data yet.
 bool rangeReference(const SymbolState& s, ChartRange range, float& reference);
 
+// Compare vs SPY (8B): the stock and `bench` (SPY) as % change from each one's reference
+// price for the range, Y axis in %, with a legend "NVDA +2.10%  SPY +0.90%  +1.20% vs SPY".
+void drawCompareChart(const SymbolState& s, const SymbolState& bench, const ChartBox& box, ChartRange range);
+
+// The legend's figures: each one's change over the range. False if either lacks a reference.
+bool compareFigures(const SymbolState& s, const SymbolState& bench, ChartRange range, float& stockPct,
+                    float& benchPct);
+
 // "1H", "1D", "5D", "1M"
 const char* rangeName(ChartRange range);
