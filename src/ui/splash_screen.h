@@ -1,12 +1,21 @@
-// Startup screen shown while the device connects and downloads its first prices:
-// a logo drawn from shapes, the creators' names, and a progress line + bar.
+// Startup screen (Phase 9 design): logo and title, three boot steps that check off
+// (Wi-Fi, Clock, Prices), a ring counting the prices in, and a faint chart behind it all.
 #pragma once
 #include <stdint.h>
 
 namespace splash {
 
+enum class Step : uint8_t { Waiting, Done, Problem };
+
+struct Boot {
+  Step wifi;
+  const char* wifiDetail;    // "connected", "connecting" ..., "setup needed"
+  Step clock;
+  char clockDetail[20];      // "synced 9:41 AM", "waiting"
+  int priced, total;         // symbols with a price / all symbols
+};
+
 void drawFull();
-// Redraws the progress line and bar when they change. percent is 0-100.
-void update(const char* status, int percent);
+void update(const Boot& boot);   // redraws only the rows / ring whose content changed
 
 }  // namespace splash

@@ -22,7 +22,8 @@ class ScreenManager {
   void showHome(uint32_t nowMs);
   void showDetail(int ticker, bool pinned, uint32_t nowMs);
   void showSectors(bool pinned, uint32_t nowMs);
-  void showClock(uint32_t nowMs);
+  void showClock(uint32_t nowMs, bool manual = false);
+  void openTab(int tab, uint32_t nowMs);
   bool clockWanted() const;
   void showSetup();
   void updateSplash(uint32_t nowMs);
@@ -48,4 +49,5 @@ class ScreenManager {
   detail::Page page_ = detail::Page::Day;   // which Detail page is showing
   bool sectorsAuto_ = false;   // the sector map came up in the auto cycle (times out to Home)
   uint32_t lastInputMs_ = 0;   // the overnight clock comes back after a minute without input
+  bool clockManual_ = false;   // opened from the Clock tab: stays even while the market is open
 };

@@ -4,10 +4,10 @@
 #include "config.h"
 
 // Saved as one block of bytes. Version 2 added the cycle options at the end of the struct,
-// version 3 the sector map layout and overnight clock; an older block is shorter and simply
-// fills the fields it had. A future change that isn't "add fields at the end" must bump the
-// version and drop older blocks.
-static const uint8_t SETTINGS_VERSION = 3;
+// version 3 the sector map layout and overnight clock, version 4 the color theme; an older
+// block is shorter and simply fills the fields it had. A future change that isn't "add
+// fields at the end" must bump the version and drop older blocks.
+static const uint8_t SETTINGS_VERSION = 4;
 
 static Settings current;
 static Preferences prefs;

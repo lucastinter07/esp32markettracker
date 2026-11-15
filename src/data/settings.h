@@ -22,6 +22,7 @@ struct Settings {
   uint8_t cycleSpeed = CYCLE_NORMAL;
   uint8_t sectorMap = SECTOR_MAP_SIZED;   // (Phase 8A)
   bool overnightClock = true;  // clock screen instead of the cycle while the market is closed (8D)
+  uint8_t theme = 0;           // color theme, index into ui::palette() (Phase 9); 0 = Graphite
 };
 
 void settingsInit();               // loads saved settings (or the defaults above)
