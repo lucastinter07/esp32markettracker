@@ -4,29 +4,30 @@
 #include "config.h"
 #include "data/settings.h"
 #include "hal/display.h"
+#include "ui/palette.h"
 #include "ui/theme.h"
 
 namespace settingsui {
 
 static const int16_t HEADER_H = 40;
 static const int16_t BACK_W = 120;
-static const int16_t ROW_Y0 = 48, ROW_H = 32;   // 7 rows per page: 48 .. 272
-static const int ROWS_PER_PAGE = 7;
+static const int16_t ROW_Y0 = 44, ROW_H = 29;   // 8 rows per page: 44 .. 276 (restyled in 9E)
+static const int ROWS_PER_PAGE = 8;
 static const int16_t PAGER_Y = 282, PAGER_H = 36;   // page buttons along the bottom
 static const int16_t PAGER_W = 150;
 
 // Page 1 = what the screen shows, page 2 = alerts, sound and system (reorganized in 8A).
 enum Row {
   // page 1
-  WATCHLIST, AUTO_CYCLE, CYCLE_SPEED, SECTOR_MAP, OVERNIGHT_CLOCK, BRIGHTNESS, NIGHT_DIM,
+  WATCHLIST, AUTO_CYCLE, CYCLE_SPEED, SECTOR_MAP, OVERNIGHT_CLOCK, THEME, BRIGHTNESS, NIGHT_DIM,
   // page 2
   ALERTS, CLICKS, CHIME, WIFI, DIAGNOSTICS, REFRESH, RESTART,
   ROW_COUNT
 };
 static const char* const LABELS[ROW_COUNT] = {
-    "Watchlist",    "Auto cycle",   "Cycle speed",      "Sector map",  "Overnight clock", "Brightness",
-    "Night dimming", "Price alerts", "Click sounds",    "Open/close chime", "Wi-Fi setup", "Diagnostics",
-    "Re-download data", "Restart device",
+    "Watchlist",    "Auto cycle",   "Cycle speed",      "Sector map",  "Overnight clock", "Theme",
+    "Brightness",   "Night dimming", "Price alerts",    "Click sounds", "Open/close chime", "Wi-Fi setup",
+    "Diagnostics",  "Re-download data", "Restart device",
 };
 static const int PAGE_COUNT = (ROW_COUNT + ROWS_PER_PAGE - 1) / ROWS_PER_PAGE;
 
@@ -70,6 +71,7 @@ static void valueText(int row, char* buf, size_t size) {
     case BRIGHTNESS:  snprintf(buf, size, "%d%%", st.brightness); break;
     case SECTOR_MAP:  snprintf(buf, size, st.sectorMap == SECTOR_MAP_GRID ? "GRID" : "SIZED"); break;
     case OVERNIGHT_CLOCK: snprintf(buf, size, st.overnightClock ? "ON" : "OFF"); break;
+    case THEME:       snprintf(buf, size, "%s", ui::palette(st.theme).name); break;
     case NIGHT_DIM:   // one row for on/off and the hours: OFF or e.g. "22:00-07:00"
       if (st.nightDim) snprintf(buf, size, "%02d:00-%02d:00", st.nightStart, st.nightEnd);
       else snprintf(buf, size, "OFF");
@@ -217,6 +219,7 @@ Action activate(int row, uint32_t nowMs) {
     case CHIME:       st.chime = !st.chime; break;
     case SECTOR_MAP:  st.sectorMap = st.sectorMap == SECTOR_MAP_GRID ? SECTOR_MAP_SIZED : SECTOR_MAP_GRID; break;
     case OVERNIGHT_CLOCK: st.overnightClock = !st.overnightClock; break;
+    case THEME:       st.theme = (uint8_t)((st.theme + 1) % ui::THEME_COUNT); break;   // seen on the next Home
     case ALERTS:
       i = indexOf(ALERT_STEPS, sizeof(ALERT_STEPS), st.alertPercent);
       st.alertPercent = ALERT_STEPS[(i + 1) % sizeof(ALERT_STEPS)];

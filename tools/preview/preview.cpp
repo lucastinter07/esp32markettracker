@@ -25,6 +25,13 @@ uint32_t millis() { return 600000; }
 
 static DFRobot_GDL screen;
 DFRobot_GDL& display() { return screen; }
+void displayPushPixels(int16_t x, int16_t y, int16_t w, int16_t h, const uint8_t* rgb666) {
+  for (int16_t j = 0; j < h; j++)
+    for (int16_t i = 0; i < w; i++, rgb666 += 3) {
+      uint16_t c = (uint16_t)(((rgb666[0] >> 3) << 11) | ((rgb666[1] >> 2) << 5) | (rgb666[2] >> 3));
+      screen.drawPixel(x + i, y + j, c);
+    }
+}
 
 static Settings currentSettings;
 const Settings& settings() { return currentSettings; }
@@ -38,17 +45,28 @@ bool isStale(const SymbolState&, uint32_t, bool) { return false; }
 const char* watchlistIndexLabel(int k) { return k == 0 ? "S&P 500" : "NASDAQ"; }
 const char* quoteFeedProblem() { return nullptr; }
 
-static EtTime NOW = {2026, 11, 12, 13, 46};   // Wed Nov 12 2026, 1:46 PM: market open
+static EtTime NOW = {2026, 11, 12, 13, 46};   // Thu Nov 12 2026, 1:46 PM: market open
 bool timeNowET(EtTime& out) { out = NOW; return true; }
 bool marketIsOpenNow() { return marketStatus(NOW).phase == MarketPhase::Open; }
 WifiState wifiState() { return WifiState::Connected; }
 const char* wifiSetupName() { return "MarketTracker-A1B2"; }
 
 // ---------- sample data ----------
-static uint32_t rngState = 1;
-static float rnd() {   // 0..1
-  rngState = rngState * 1103515245u + 12345u;
-  return (rngState >> 8 & 0xFFFF) / 65535.0f;
+// A random walk from a to b over n points, the same as the design canvas mockups' path()
+// (so a chart here looks like the one on the canvas).
+static void walk(uint32_t seed, int n, float a, float b, float wiggle, float* out) {
+  uint32_t x = (seed * 7919u) % 233280u;
+  float v = 0;
+  for (int i = 0; i < n; i++) {
+    x = (x * 9301u + 49297u) % 233280u;
+    v += x / 233280.0f - 0.5f;
+    out[i] = v;
+  }
+  float first = out[0], last = out[n - 1];
+  for (int i = 0; i < n; i++) {
+    float t = (float)i / (n - 1);
+    out[i] = a + (b - a) * t + (out[i] - (first + (last - first) * t)) * wiggle;
+  }
 }
 
 static void fill(SymbolState& s, const char* sym, const char* name, float last, float chg, uint32_t seed) {
@@ -62,14 +80,11 @@ static void fill(SymbolState& s, const char* sym, const char* name, float last, 
   q.high = last + fabsf(chg) * 0.4f;
   q.low = q.prevClose - fabsf(chg) * 0.3f;
   s.applyQuote(q, 0, false, 0);
-  rngState = seed;
   uint32_t open = 1794493800;   // 9:30 ET on Nov 12 2026 (unix seconds)
-  float v = q.prevClose, wiggle = fabsf(chg) * 0.25f + last * 0.002f;
-  for (int i = 0; i < 250; i++) {
-    float t = i / 249.0f;
-    v = q.prevClose + chg * t + (rnd() - 0.5f) * wiggle;
-    s.intraday.push(v, open + i * 60);
-  }
+  const int N = 78;             // 9:30 to 3:55, every 5 minutes
+  float v[N];
+  walk(seed, N, q.prevClose, last, fabsf(chg) * 0.5f + last * 0.002f, v);
+  for (int i = 0; i < N; i++) s.intraday.push(v[i], open + i * 300);
   if (name) {
     s.profile.valid = true;
     snprintf(s.profile.name, sizeof(s.profile.name), "%s", name);
@@ -129,9 +144,7 @@ int main(int argc, char** argv) {
   splash::drawFull();
   splash::Boot boot;
   boot.wifi = splash::Step::Done;
-  boot.wifiDetail = "Lucas's iPhone";
   boot.clock = splash::Step::Done;
-  snprintf(boot.clockDetail, sizeof(boot.clockDetail), "synced 9:41 AM");
   boot.priced = 5;
   boot.total = NUM_SYMBOLS;
   splash::update(boot);

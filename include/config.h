@@ -30,6 +30,10 @@ constexpr uint8_t GT911_ADDR = 0x5D;
 
 constexpr int16_t SCREEN_W = 480;   // landscape
 constexpr int16_t SCREEN_H = 320;
+// ui::text() sends each string to the panel as a few pixel blocks (fast). false = draw it
+// with the library's fillRect instead (slower; only for ruling out the block writes if text
+// ever looks wrong on the panel).
+constexpr bool TEXT_BLOCK_WRITES = true;
 
 // ---- Buttons (active-low: wire each between the pin and GND) ----
 constexpr uint8_t BTN_PREV   = 7;

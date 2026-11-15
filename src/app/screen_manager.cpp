@@ -1,6 +1,5 @@
 #include "app/screen_manager.h"
 #include <Arduino.h>
-#include <WiFi.h>
 #include "app/input_event.h"
 #include "app/schedule.h"
 #include "config.h"
@@ -20,8 +19,6 @@
 #include "ui/sector_screen.h"
 #include "ui/settings_screen.h"
 #include "ui/splash_screen.h"
-#include "ui/status_bar.h"
-#include "ui/tab_bar.h"
 #include "ui/watchlist_screen.h"
 #include "ui/setup_screen.h"
 
@@ -54,28 +51,10 @@ void ScreenManager::updateSplash(uint32_t nowMs) {
   bool problem = quoteFeedProblem() != nullptr && quoteFeedStatus() != FeedStatus::Starting;
 
   splash::Boot boot;
-  static char ssid[33];
-  if (wifi == WifiState::Setup) {
-    boot.wifi = splash::Step::Problem;
-    boot.wifiDetail = "setup needed";
-  } else if (wifi == WifiState::Connected) {
-    boot.wifi = splash::Step::Done;
-    strncpy(ssid, WiFi.SSID().c_str(), sizeof(ssid) - 1);
-    ssid[sizeof(ssid) - 1] = '\0';
-    boot.wifiDetail = ssid;
-  } else {
-    boot.wifi = splash::Step::Waiting;
-    boot.wifiDetail = "connecting";
-  }
-  if (timeNowET(now)) {
-    boot.clock = splash::Step::Done;
-    int hour12 = now.hour % 12 == 0 ? 12 : now.hour % 12;
-    snprintf(boot.clockDetail, sizeof(boot.clockDetail), "synced %d:%02d %s", hour12, now.minute,
-             now.hour < 12 ? "AM" : "PM");
-  } else {
-    boot.clock = splash::Step::Waiting;
-    snprintf(boot.clockDetail, sizeof(boot.clockDetail), "waiting");
-  }
+  if (wifi == WifiState::Setup) boot.wifi = splash::Step::Problem;
+  else if (wifi == WifiState::Connected) boot.wifi = splash::Step::Done;
+  else boot.wifi = splash::Step::Waiting;
+  boot.clock = timeNowET(now) ? splash::Step::Done : splash::Step::Waiting;
   boot.priced = priced;
   boot.total = NUM_SYMBOLS;
   splash::update(boot);
@@ -97,23 +76,12 @@ bool ScreenManager::clockWanted() const {
   return settings().overnightClock && timeNowET(now) && overnightClockTime(now, CLOCK_GRACE_MIN);
 }
 
-void ScreenManager::showClock(uint32_t nowMs, bool manual) {
+void ScreenManager::showClock(uint32_t nowMs) {
   detail::resetCompare();
   mode_ = Mode::Clock;
   modeStartMs_ = nowMs;
-  clockManual_ = manual;
   clockui::drawFull();
-  Serial.printf("screen: clock (%s)\n", manual ? "Clock tab" : "overnight");
-}
-
-// The bottom tab bar (Phase 9): Home · Sectors · Clock · Settings.
-void ScreenManager::openTab(int tab, uint32_t nowMs) {
-  switch (tab) {
-    case tabbar::Home:     showHome(nowMs); break;
-    case tabbar::Sectors:  showSectors(true, nowMs); break;
-    case tabbar::Clock:    showClock(nowMs, true); break;
-    case tabbar::Settings: showSettings(nowMs); break;
-  }
+  Serial.println("screen: overnight clock");
 }
 
 void ScreenManager::showSetup() {
@@ -197,7 +165,7 @@ void ScreenManager::update(uint32_t nowMs) {
   // Overnight clock: replaces the normal screens a minute after the last input, and hands
   // back to Home when the market opens (or the setting is turned off).
   bool wantClock = clockWanted();
-  if (mode_ == Mode::Clock && !wantClock && !clockManual_) {
+  if (mode_ == Mode::Clock && !wantClock) {
     showHome(nowMs);
     return;
   }
@@ -352,14 +320,13 @@ void ScreenManager::handleInputAction(const InputEvent& ev, uint32_t nowMs) {
         break;
       case InputType::Tap: {
         int row = home::rowAt(ev.x, ev.y);
-        int tab = tabbar::tabAt(ev.x, ev.y);
         if (cfg::TOUCH_DEBUG) {
           if (row >= 0) Serial.printf("tap %d,%d -> row %d (%s)\n", ev.x, ev.y, row, stock(row).symbol);
-          else Serial.printf("tap %d,%d -> %s\n", ev.x, ev.y, tab >= 0 ? "tab bar" : "status / index chips");
+          else Serial.printf("tap %d,%d -> nothing (header or index bar)\n", ev.x, ev.y);
         }
-        if (tab >= 0) {
-          if (tab != tabbar::Home) openTab(tab, nowMs);
-        } else if (home::isIndexTap(ev.x, ev.y)) {
+        if (home::isMenuTap(ev.x, ev.y)) {
+          showSettings(nowMs);
+        } else if (home::isIndexBarTap(ev.x, ev.y)) {
           showSectors(true, nowMs);
         } else if (row >= 0) {
           highlight_ = row;
@@ -375,10 +342,10 @@ void ScreenManager::handleInputAction(const InputEvent& ev, uint32_t nowMs) {
   }
 
   if (mode_ == Mode::Sectors) {
-    // Until the sector map gets the tab bar (9D), a tap on its status line goes Home.
-    bool statusTap = ev.type == InputType::Tap && ev.y < STATUS_H + 4;
-    if (ev.type == InputType::Back || statusTap) {
+    if (ev.type == InputType::Back) {
       showHome(nowMs);
+    } else if (ev.type == InputType::Tap && home::isMenuTap(ev.x, ev.y)) {   // same status bar as Home
+      showSettings(nowMs);
     } else if (sectorsAuto_) {
       sectorsAuto_ = false;   // the user is looking: stay until BACK
       Serial.println("screen: sectors (pinned)");

@@ -84,14 +84,9 @@ static void drawDate(const EtTime& now, bool force) {
 static void drawNextOpen(const EtTime& now, bool force) {
   MarketStatus s = marketStatus(now);
   char wait[16], line[48];
-  if (s.phase == MarketPhase::Open) {   // opened from the Clock tab during the session
-    formatWait(wait, sizeof(wait), s.minutesToClose);
-    snprintf(line, sizeof(line), "Market open, closes in %s", wait);
-  } else {
-    formatWait(wait, sizeof(wait), s.minutesToOpen);
-    snprintf(line, sizeof(line), "%sOpens %s 9:30 AM, in %s", s.holiday ? "Holiday. " : "",
-             s.nextOpenIsToday ? "today" : DAY_SHORT[s.nextOpenWeekday], wait);
-  }
+  formatWait(wait, sizeof(wait), s.minutesToOpen);
+  snprintf(line, sizeof(line), "%sOpens %s 9:30 AM, in %s", s.holiday ? "Holiday. " : "",
+           s.nextOpenIsToday ? "today" : DAY_SHORT[s.nextOpenWeekday], wait);
   if (!force && strcmp(line, drawnOpen) == 0) return;
   strcpy(drawnOpen, line);
   display().fillRect(0, OPEN_Y, cfg::SCREEN_W, 16, theme::BG);

@@ -5,7 +5,18 @@
 #include "config.h"
 #include "app/input_event.h"
 
-static DFRobot_ST7365P_320x480_HW_SPI screen(cfg::TFT_DC, cfg::TFT_CS, cfg::TFT_RST, cfg::TFT_BL);
+// The panel's driver class, plus one public helper: the library keeps its raw "send these
+// pixel bytes" call protected, and anti-aliased text needs it (displayPushPixels below).
+class TrackerScreen : public DFRobot_ST7365P_320x480_HW_SPI {
+ public:
+  using DFRobot_ST7365P_320x480_HW_SPI::DFRobot_ST7365P_320x480_HW_SPI;
+  void pushBlock(int16_t x, int16_t y, int16_t w, int16_t h, const uint8_t* rgb666) {
+    setDisplayArea((uint16_t)x, (uint16_t)y, (uint16_t)w, (uint16_t)h);
+    sendColor(const_cast<uint8_t*>(rgb666), (uint32_t)w * h * 3);
+  }
+};
+
+static TrackerScreen screen(cfg::TFT_DC, cfg::TFT_CS, cfg::TFT_RST, cfg::TFT_BL);
 // RST and INT are passed as "not connected" (0xFF) so the library leaves them alone:
 // resetTouchController() below does the reset the way the GT911 datasheet specifies.
 static DFRobot_Touch_GT911_IPS touch(cfg::GT911_ADDR, 0xFF, 0xFF);
@@ -79,6 +90,13 @@ void displayInit() {
 
 DFRobot_GDL& display() {
   return screen;
+}
+
+// The library's own drawPIC() would send these one pixel per call in this color mode; one
+// address window plus one write is much faster (used for anti-aliased text).
+void displayPushPixels(int16_t x, int16_t y, int16_t w, int16_t h, const uint8_t* rgb666) {
+  if (w <= 0 || h <= 0) return;
+  screen.pushBlock(x, y, w, h, rgb666);
 }
 
 void touchPoll(uint32_t nowMs) {

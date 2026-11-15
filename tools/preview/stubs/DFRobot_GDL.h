@@ -1,25 +1,11 @@
-// PC stand-in for the display library, for tools/preview: the drawing calls the redesigned
-// screens use, painting into a 480 x 320 RGB565 framebuffer that preview.cpp saves as an image.
-// Only what Phase 9 screens need; the old built-in-font calls are accepted and ignored.
+// PC stand-in for the display library, for tools/preview: the drawing calls the screens use,
+// painting into a 480 x 320 RGB565 framebuffer that preview.cpp saves as an image.
 #pragma once
 #include <stdint.h>
 #include <stdlib.h>
+#include "ui/font6x8.h"
 
 #define PROGMEM
-
-typedef struct {
-  uint16_t bitmapOffset;
-  uint8_t width, height;
-  uint8_t xAdvance;
-  int8_t xOffset, yOffset;
-} GFXglyph;
-
-typedef struct {
-  uint8_t* bitmap;
-  GFXglyph* glyph;
-  uint8_t first, last;
-  uint8_t yAdvance;
-} GFXfont;
 
 class DFRobot_GDL {
  public:
@@ -94,9 +80,32 @@ class DFRobot_GDL {
         if ((a >= 0 && b >= 0 && d >= 0) || (a <= 0 && b <= 0 && d <= 0)) drawPixel(x, y, c);
       }
   }
-  // Built-in font calls from screens not yet redesigned: accepted, not drawn.
-  void setTextSize(uint8_t) {}
-  void setTextColor(uint16_t, uint16_t = 0) {}
-  void setCursor(int16_t, int16_t) {}
-  void print(const char*) {}
+  // The library's built-in font (screens not yet redesigned print with it). Like the real
+  // library: codes >= 176 shift by one (no cp437(true)), the cursor moves, bg == fg = no box.
+  void setTextSize(uint8_t s) { textSize = s ? s : 1; }
+  void setTextColor(uint16_t fg) { textFg = textBg = fg; }
+  void setTextColor(uint16_t fg, uint16_t bg) { textFg = fg; textBg = bg; }
+  void setCursor(int16_t x, int16_t y) { cursorX = x; cursorY = y; }
+  void print(const char* s) {
+    for (; *s; s++) {
+      uint8_t c = (uint8_t)*s;
+      if (c == '\n') {
+        cursorX = 0;
+        cursorY += 8 * textSize;
+        continue;
+      }
+      if (c >= 176) c++;
+      if (textBg != textFg) fillRect(cursorX, cursorY, 6 * textSize, 8 * textSize, textBg);
+      for (int col = 0; col < 5; col++)
+        for (int row = 0; row < 8; row++)
+          if ((ui::FONT6X8[c * 5 + col] >> row) & 1)
+            fillRect(cursorX + col * textSize, cursorY + row * textSize, textSize, textSize, textFg);
+      cursorX += 6 * textSize;
+    }
+  }
+
+ private:
+  int16_t cursorX = 0, cursorY = 0;
+  uint8_t textSize = 1;
+  uint16_t textFg = 0xFFFF, textBg = 0xFFFF;
 };
