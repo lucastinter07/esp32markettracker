@@ -4,6 +4,7 @@
 // Pure C++, unit-tested on the PC.
 #pragma once
 #include <stdint.h>
+#include "price_series.h"
 
 static const int HISTORY_DAYS = 25;   // ~1 month of sessions (21) plus a margin
 static const int HISTORY_BARS = 70;   // 13 half-hours per session x 5 sessions, plus a margin
@@ -33,6 +34,16 @@ bool parseBarsCsv(const char* csv, History& out);
 // The lower-level version: any bar size (e.g. 300 for 5-minute bars), into any arrays.
 // Fills up to `capacity` bars, oldest first, with END times. Returns how many.
 int parseBarsCsvInto(const char* csv, uint32_t* times, float* prices, int capacity, uint32_t barSeconds);
+
+// One session for the 5D chart at the same 30-minute steps as the backfilled days, so every
+// day looks alike (a live quote a minute is far more jagged than 13 bars a day) and holes in
+// one source are filled from the other. For each half hour ending in (open, close]: the
+// backfilled bar for it if there is one, otherwise the last live price in that half hour
+// (only once that half hour is over); a half hour with neither is left out. Then the newest live price, if it's later than the
+// last half hour written (the session still in progress). `open` / `close` in unix seconds.
+// Writes up to `capacity` points (END times, oldest first) and returns how many.
+int sessionHalfHours(const PriceSeries& live, const History& h, uint32_t open, uint32_t close, uint32_t* outTimes,
+                     float* outPrices, int capacity);
 
 // The close `sessions` trading days before `currentSessionDay`. False without enough history.
 bool closeSessionsBack(const History& h, int32_t currentSessionDay, int sessions, float& close);

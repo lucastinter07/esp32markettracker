@@ -1,6 +1,25 @@
 // PC stand-in for Arduino.h, for tools/preview (only what the screen code uses).
 #pragma once
+#include <ctype.h>
+#include <time.h>
 #include <math.h>
+
+// MinGW has no localtime_r / gmtime_r (the ESP32's newlib does); single-threaded here, so
+// the plain versions do.
+inline struct tm* previewLocaltime(const time_t* t, struct tm* out) {
+  struct tm* r = localtime(t);
+  if (!r) return nullptr;
+  *out = *r;
+  return out;
+}
+inline struct tm* previewGmtime(const time_t* t, struct tm* out) {
+  struct tm* r = gmtime(t);
+  if (!r) return nullptr;
+  *out = *r;
+  return out;
+}
+#define localtime_r previewLocaltime
+#define gmtime_r previewGmtime
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>

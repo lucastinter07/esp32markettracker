@@ -1,32 +1,33 @@
 #include "ui/detail_screen.h"
 #include <Arduino.h>
+#include <ctype.h>
 #include <string.h>
 #include "config.h"
 #include "data/market_data.h"
 #include "data/targets.h"
 #include "hal/display.h"
 #include "net/time_sync.h"
+#include "ui/gfx.h"
+#include "ui/palette.h"
 #include "ui/price_chart.h"
-#include "ui/theme.h"
 
 namespace detail {
 
-// Layout, top to bottom (480 x 320)
-static const int16_t HEADER_H = 40;
-static const int16_t BACK_W = 120;
-static const int16_t NAME_Y = 46;       // company name line, just below the header
-static const int16_t PRICE_Y = 66;      // big price + change
-static const int16_t BODY_Y = 110;      // page content starts here...
-static const int16_t BODY_H = 174;      // ...and ends at 283
-static const int16_t BAR_Y = 284, BAR_H = 4;   // auto-mode countdown, just above the tabs
-static const int16_t TAB_Y = 288, TAB_H = 32;
-static const int TAB_COUNT = PAGE_COUNT;   // 96 px each
-static const char* const TAB_NAMES[TAB_COUNT] = {"1H", "1D", "5D", "1M", "STATS"};
+using ui::Align;
 
-// Stats page: two columns of four rows, labels left, values right-aligned
-static const int16_t STAT_COL_X[2] = {10, 250};
-static const int16_t STAT_COL_W = 220;
-static const int16_t STAT_Y = 118, STAT_ROW_H = 28;   // 6 rows: the last ends at y 274, above the tabs
+// Layout (480 x 320), as on the design canvas (page "FINAL - Layout A - Graphite")
+static const int16_t SYMBOL_X = 100, NAME_X = 156;
+static const int16_t PRICE_Y = 32;                   // size 4 price; change and range name at y 46
+static const int16_t BODY_Y = 66, BODY_H = 214;      // page content: y 66 .. 279
+static const ChartBox DAY_BOX = {8, 78, 396, 158};   // plot area; labels right, time row under
+static const ChartBox CMP_BOX = {8, 92, 396, 144};   // compare: legend row above the plot
+static const int16_t BTN_Y = 282, BTN_H = 30;
+static const int16_t RANGE_X = 8, RANGE_W = 64;      // 4 range buttons in one frame
+static const int16_t STATS_X = 274, STATS_W = 92;
+static const int16_t CMP_X = 374, CMP_W = 98;
+static const int16_t COUNT_Y = 315, COUNT_H = 3;     // auto-mode countdown under the buttons
+static const int16_t TILE_W = 113, TILE_H = 66;      // stats: 4 x 2 tiles + earnings tile
+static const char* const RANGE_NAMES[4] = {"1H", "1D", "5D", "1M"};
 
 static Page page = Page::Day;
 static bool compare = false;          // chart pages show the stock vs SPY in % (8B)
@@ -35,6 +36,19 @@ static uint32_t drawnBenchVersion = 0;   // SPY's version when the compare chart
 static int drawnStaleMin = -1;   // minutes since the last quote when stale, -1 when fresh
 static int16_t drawnBarW = -1;
 
+static bool isChartPage() {
+  return page != Page::Stats;
+}
+
+static ChartRange pageRange() {
+  return (ChartRange)page;   // Hour, Day, FiveDay, Month line up with ChartRange
+}
+
+// Header text that isn't the main ink: halfway between the bar and its ink color.
+static uint16_t barDim() {
+  return ui::mix(ui::pal().bar, ui::pal().ink, 128);
+}
+
 // How many whole minutes old the quote is when it counts as stale, otherwise -1.
 static int staleMinutes(const SymbolState& s) {
   uint32_t nowMs = millis();
@@ -42,47 +56,7 @@ static int staleMinutes(const SymbolState& s) {
   return (nowMs - s.lastUpdateMs) / 60000;
 }
 
-static void drawBadge(bool pinned) {
-  DFRobot_GDL& gfx = display();
-  int16_t x = cfg::SCREEN_W - 100;
-  gfx.fillRect(x, 0, 100, HEADER_H, theme::PANEL);
-  gfx.setTextSize(2);
-  gfx.setTextColor(pinned ? theme::ACCENT : theme::LABEL, theme::PANEL);
-  gfx.setCursor(x + 10, 12);
-  gfx.print(pinned ? "PINNED" : "AUTO");
-}
-
-static void drawHeader(int ticker, bool pinned) {
-  DFRobot_GDL& gfx = display();
-  gfx.fillRect(0, 0, cfg::SCREEN_W, HEADER_H, theme::PANEL);
-  gfx.fillRect(0, 0, BACK_W, HEADER_H, theme::HIGHLIGHT);
-  gfx.setTextSize(2);
-  gfx.setTextColor(theme::TEXT, theme::HIGHLIGHT);
-  gfx.setCursor(12, 12);
-  gfx.print("< BACK");
-
-  gfx.setTextSize(3);
-  gfx.setTextColor(theme::TEXT, theme::PANEL);
-  gfx.setCursor(BACK_W + 20, 9);
-  gfx.print(stock(ticker).symbol);
-  drawBadge(pinned);
-}
-
-static void drawTabs() {
-  DFRobot_GDL& gfx = display();
-  int16_t w = cfg::SCREEN_W / TAB_COUNT;
-  gfx.setTextSize(2);
-  for (int i = 0; i < TAB_COUNT; i++) {
-    bool selected = i == (int)page;
-    uint16_t bg = selected ? theme::HIGHLIGHT : theme::PANEL;
-    gfx.fillRect(i * w, TAB_Y, w - 1, TAB_H, bg);   // the 1 px gap separates the tabs
-    gfx.setTextColor(selected ? theme::TEXT : theme::LABEL, bg);
-    gfx.setCursor(i * w + (w - (int16_t)strlen(TAB_NAMES[i]) * 12) / 2, TAB_Y + 9);
-    gfx.print(TAB_NAMES[i]);
-  }
-}
-
-// Prices in at most 7 characters, so a value never runs into the next column.
+// Prices in at most 7 characters, so a value always fits its tile.
 static void formatPrice(char* buf, size_t size, float v) {
   if (v >= 10000) snprintf(buf, size, "%.0f", v);
   else if (v >= 1000) snprintf(buf, size, "%.1f", v);
@@ -96,209 +70,206 @@ static void formatMarketCap(char* buf, size_t size, double dollars) {
   else snprintf(buf, size, "%.0fM", dollars / 1e6);
 }
 
-// One stats row: amber label on the left, value right-aligned at the column's edge.
-// "%7s" pads the value on the left, so a shorter new value covers a longer old one.
-static void drawStat(int col, int row, const char* label, const char* value,
-                     uint16_t valueColor = theme::TEXT) {
-  DFRobot_GDL& gfx = display();
-  int16_t x = STAT_COL_X[col];
-  int16_t y = STAT_Y + row * STAT_ROW_H;
-  char padded[12];
-  snprintf(padded, sizeof(padded), "%7s", value[0] ? value : "--");
-  gfx.setTextSize(2);
-  gfx.setTextColor(theme::STAT_LABEL, theme::BG);
-  gfx.setCursor(x, y);
-  gfx.print(label);
-  gfx.setTextColor(valueColor, theme::BG);
-  gfx.setCursor(x + STAT_COL_W - 7 * 12, y);
-  gfx.print(padded);
+static void upperCase(char* s) {
+  for (; *s; s++) *s = (char)toupper((unsigned char)*s);
 }
 
-// Full-width bottom row, e.g. "EARNINGS  Mon Feb 1, after close (84d)".
-static void drawEarningsRow(const SymbolState& s) {
-  static const char* const DAYS[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
-  static const char* const MONTHS[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-  DFRobot_GDL& gfx = display();
-  const Earnings& e = s.earnings;
-  int16_t y = STAT_Y + 5 * STAT_ROW_H;
-  gfx.fillRect(0, y, cfg::SCREEN_W, 16, theme::BG);
-  gfx.setTextSize(2);
-  gfx.setTextColor(theme::STAT_LABEL, theme::BG);
-  gfx.setCursor(STAT_COL_X[0], y);
-  gfx.print("EARNINGS");
+// ---------- header bar ----------
 
-  char buf[40];
-  EtTime now;
-  if (!e.valid || !timeNowET(now)) {
-    snprintf(buf, sizeof(buf), "--");
-  } else if (e.day == 0) {
-    snprintf(buf, sizeof(buf), "none scheduled yet");
-  } else {
-    int y2, m, d;
-    civilFromDay(e.day, y2, m, d);
-    int daysAway = e.day - dayNumber(now.year, now.month, now.day);
-    const char* when = earningsTimeText(e);
-    char away[12];
-    if (daysAway == 0) snprintf(away, sizeof(away), "TODAY");
-    else snprintf(away, sizeof(away), "%dd", daysAway);
-    snprintf(buf, sizeof(buf), "%s %s %d%s%s (%s)", DAYS[weekdayOf(y2, m, d)], MONTHS[m - 1], d,
-             when[0] ? ", " : "", when, away);
+static void drawBadge(bool pinned) {
+  const ui::Palette& p = ui::pal();
+  ui::text(cfg::SCREEN_W - 6, 9, pinned ? "PINNED" : "  AUTO", 1, barDim(), p.bar, Align::Right);
+}
+
+static void drawHeader(const SymbolState& s, bool pinned) {
+  const ui::Palette& p = ui::pal();
+  ui::headerBar("< BACK", nullptr);
+  int16_t x = ui::text(SYMBOL_X, 4, s.symbol, 2, p.ink, p.bar) + 8;
+  if (s.profile.valid) {
+    if (x < NAME_X) x = NAME_X;
+    char name[sizeof(s.profile.name)];
+    snprintf(name, sizeof(name), "%s", s.profile.name);
+    upperCase(name);
+    char shown[sizeof(name)];
+    ui::fitText(name, 1, cfg::SCREEN_W - 6 - 6 * 6 - 12 - x, shown, sizeof(shown));   // up to "PINNED"
+    ui::text(x, 9, shown, 1, barDim(), p.bar);
   }
-  gfx.setTextColor(theme::TEXT, theme::BG);
-  gfx.setCursor(STAT_COL_X[0] + 8 * 12 + 12, y);   // just after the 8-character label
-  gfx.print(buf);
+  drawBadge(pinned);
 }
 
-// Change over the last `sessions` trading days, from the backfilled daily closes.
-// "--" until there's enough history (or without a Twelve Data key).
-static void drawChangeStat(int col, int row, const char* label, const SymbolState& s, int sessions) {
-  EtTime now;
-  float pct;
-  if (s.hasData && timeNowET(now) &&
-      changeOverSessions(s.history, lastSessionDay(now), s.quote.price, sessions, pct)) {
-    char buf[12];
-    snprintf(buf, sizeof(buf), "%+.2f%%", pct);
-    drawStat(col, row, label, buf, theme::changeColor(pct));
+// ---------- price row ----------
+
+// Price (grey when stale), the change over the page's range (or vs SPY), the range's
+// name on the right, and "DELAYED" above it when the price may be out of date.
+static void drawTop(const SymbolState& s) {
+  const ui::Palette& p = ui::pal();
+  int staleMin = staleMinutes(s);
+  display().fillRect(0, PRICE_Y - 6, cfg::SCREEN_W, BODY_Y - PRICE_Y + 6, p.bg);
+  char buf[48];
+  formatPrice(buf, sizeof(buf), s.quote.price);
+  int16_t x = ui::text(8, PRICE_Y, buf, 4, staleMin >= 0 ? p.dim : p.text, p.bg) + 14;
+
+  ChartRange range = isChartPage() ? pageRange() : ChartRange::Day;
+  const char* note = isChartPage() ? rangeName(range) : "TODAY";
+  ui::text(cfg::SCREEN_W - 8, PRICE_Y + 14, note, 2, p.dim, p.bg, Align::Right);
+  int16_t room = cfg::SCREEN_W - 8 - ui::textWidth(note, 2) - 12 - x;
+
+  float ref, stockPct, spyPct;
+  uint16_t color = p.dim;
+  if (compare && isChartPage() && compareFigures(s, benchmark(), range, stockPct, spyPct)) {
+    snprintf(buf, sizeof(buf), "%+.2f%% VS %s %+.2f%%", stockPct, benchmark().symbol, spyPct);
+    color = stockPct >= 0 ? p.up : p.down;
+  } else if (rangeReference(s, range, ref)) {
+    float delta = s.quote.price - ref;
+    snprintf(buf, sizeof(buf), "%+.2f (%+.2f%%)", delta, delta / ref * 100.0f);
+    color = delta >= 0 ? p.up : p.down;
   } else {
-    drawStat(col, row, label, "");
+    snprintf(buf, sizeof(buf), "--");   // not enough history for this range yet
   }
+  char shown[48];
+  ui::fitText(buf, 2, room, shown, sizeof(shown));
+  ui::text(x, PRICE_Y + 14, shown, 2, color, p.bg);
+
+  if (staleMin >= 0) {
+    snprintf(buf, sizeof(buf), "DELAYED: %d MIN AGO", staleMin);
+    ui::text(cfg::SCREEN_W - 8, PRICE_Y + 2, buf, 1, p.target, p.bg, Align::Right);
+  }
+  drawnStaleMin = staleMin;
 }
 
-static void drawPriceStat(int col, int row, const char* label, float v) {
+// ---------- buttons ----------
+
+// A button inside its frame: the fill starts 1 px in and is fillW wide.
+static void drawButton(int16_t x, int16_t w, int16_t fillW, const char* label, bool on) {
+  const ui::Palette& p = ui::pal();
+  uint16_t bg = on ? p.accent : p.bg;
+  display().fillRect(x + 1, BTN_Y + 1, fillW, BTN_H - 2, bg);
+  ui::text(x + w / 2, BTN_Y + 7, label, 2, on ? p.accentInk : p.dim, bg, Align::Center);
+}
+
+static void drawButtons() {
+  DFRobot_GDL& gfx = display();
+  const ui::Palette& p = ui::pal();
+  // [ 1H | 1D | 5D | 1M ]
+  gfx.drawRect(RANGE_X, BTN_Y, 4 * RANGE_W + 1, BTN_H, p.edge);
+  for (int i = 0; i < 4; i++) {
+    int16_t x = RANGE_X + i * RANGE_W;
+    if (i) gfx.drawFastVLine(x, BTN_Y, BTN_H, p.edge);
+    drawButton(x, RANGE_W, RANGE_W - 1, RANGE_NAMES[i], (int)page == i);
+  }
+  // [ STATS ]
+  gfx.drawRect(STATS_X, BTN_Y, STATS_W, BTN_H, p.edge);
+  drawButton(STATS_X, STATS_W, STATS_W - 2, "STATS", page == Page::Stats);
+  // [ box VS SPY ]: a checkbox, since it's an on/off setting rather than a page
+  gfx.drawRect(CMP_X, BTN_Y, CMP_W, BTN_H, p.edge);
+  uint16_t bg = compare ? p.accent : p.bg, ink = compare ? p.accentInk : p.dim;
+  gfx.fillRect(CMP_X + 1, BTN_Y + 1, CMP_W - 2, BTN_H - 2, bg);
+  gfx.drawRect(CMP_X + 8, BTN_Y + 9, 12, 12, ink);
+  if (compare) gfx.fillRect(CMP_X + 11, BTN_Y + 12, 6, 6, ink);
+  ui::text(CMP_X + 26, BTN_Y + 7, "VS SPY", 2, ink, bg);
+}
+
+// ---------- stats page ----------
+
+static void drawTile(int i, const char* label, const char* value) {
+  const ui::Palette& p = ui::pal();
+  int16_t x = 8 + (i % 4) * (TILE_W + 4), y = 76 + (i / 4) * (TILE_H + 6);
+  display().fillRect(x, y, TILE_W, TILE_H, p.panel);
+  ui::text(x + 10, y + 10, label, 1, p.dim, p.panel);
+  ui::text(x + 10, y + 36, value[0] ? value : "--", 2, value[0] ? p.text : p.dim, p.panel);
+}
+
+static void drawPriceTile(int i, const char* label, float v) {
   char buf[12] = "";
   if (v > 0) formatPrice(buf, sizeof(buf), v);
-  drawStat(col, row, label, buf);
+  drawTile(i, label, buf);
+}
+
+// "WED NOV 19 . AFTER CLOSE" on the left, "IN 7 DAYS" on the right.
+static void drawEarningsTile(const SymbolState& s) {
+  static const char* const DAYS[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
+  static const char* const MONTHS[] = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+                                       "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
+  const ui::Palette& p = ui::pal();
+  const int16_t y = 222;
+  display().fillRect(8, y, 464, 52, p.panel);
+  ui::text(18, y + 10, "NEXT EARNINGS", 1, p.target, p.panel);
+  const Earnings& e = s.earnings;
+  EtTime now;
+  if (!e.valid || !timeNowET(now)) {
+    ui::text(18, y + 26, "--", 2, p.dim, p.panel);
+    return;
+  }
+  if (e.day == 0) {
+    ui::text(18, y + 26, "NONE SCHEDULED YET", 2, p.dim, p.panel);
+    return;
+  }
+  int yy, m, d;
+  civilFromDay(e.day, yy, m, d);
+  char when[24], line[48];
+  snprintf(when, sizeof(when), "%s", earningsTimeText(e));
+  upperCase(when);
+  snprintf(line, sizeof(line), "%s %s %d%s%s", DAYS[weekdayOf(yy, m, d)], MONTHS[m - 1], d,
+           when[0] ? " " G_DOT " " : "", when);
+  ui::text(18, y + 26, line, 2, p.text, p.panel);
+  int away = e.day - dayNumber(now.year, now.month, now.day);
+  char right[16];
+  if (away <= 0) snprintf(right, sizeof(right), "TODAY");
+  else if (away == 1) snprintf(right, sizeof(right), "TOMORROW");
+  else snprintf(right, sizeof(right), "IN %d DAYS", away);
+  ui::text(462, y + 26, right, 2, p.dim, p.panel, Align::Right);
 }
 
 static void drawStatsPage(const SymbolState& s) {
   const Quote& q = s.quote;
   const Fundamentals& f = s.fundamentals;
-  char buf[16];
-
-  // Left column: today. Right column: company stats (fetched weekly, kept current).
-  drawPriceStat(0, 0, "OPEN", q.open);
-  drawPriceStat(0, 1, "DAY HIGH", q.high);
-  drawPriceStat(0, 2, "DAY LOW", q.low);
-  drawPriceStat(0, 3, "PREV CLOSE", q.prevClose);
-
-  drawPriceStat(1, 0, "52W HIGH", f.valid ? f.high52 : 0);
-  drawPriceStat(1, 1, "52W LOW", f.valid ? f.low52 : 0);
-  buf[0] = '\0';
+  drawPriceTile(0, "OPEN", q.open);
+  drawPriceTile(1, "PREV CLOSE", q.prevClose);
+  drawPriceTile(2, "DAY HIGH", q.high);
+  drawPriceTile(3, "DAY LOW", q.low);
+  drawPriceTile(4, "52W HIGH", f.valid ? f.high52 : 0);
+  drawPriceTile(5, "52W LOW", f.valid ? f.low52 : 0);
+  char buf[16] = "";
   float pe = s.peRatio();
   if (pe > 0) snprintf(buf, sizeof(buf), "%.1f", pe);
-  drawStat(1, 2, "P/E", buf);
+  drawTile(6, "P/E", buf);
   buf[0] = '\0';
   double cap = s.marketCap();
   if (cap > 0) formatMarketCap(buf, sizeof(buf), cap);
-  drawStat(1, 3, "MKT CAP", buf);
-
-  // Bottom row: change over 1 week (5 sessions) and 1 month (21 sessions)
-  drawChangeStat(0, 4, "1 WEEK", s, 5);
-  drawChangeStat(1, 4, "1 MONTH", s, 21);
-
-  drawEarningsRow(s);
+  drawTile(7, "MKT CAP", buf);
+  drawEarningsTile(s);
 }
 
-// The chart pages map straight onto chart ranges (same order).
-static bool isChartPage() {
-  return page != Page::Stats;
-}
-
-static ChartRange pageRange() {
-  return (ChartRange)page;   // Hour, Day, FiveDay, Month line up with ChartRange
-}
+// ---------- page body ----------
 
 static void drawBody(int ticker) {
   const SymbolState& s = stock(ticker);
-  if (isChartPage()) {
-    ChartBox box{4, BODY_Y, cfg::SCREEN_W - 8, BODY_H};
-    if (compare) {
-      drawCompareChart(s, benchmark(), box, pageRange());
-      drawnBenchVersion = benchmark().version;
-    } else {
-      float marks[2];   // armed price targets (8C)
-      int count = 0;
-      for (int side = 0; side < 2; side++) {
-        PriceTarget t = targetGet(ticker, side == 0);
-        if (targetArmed(t)) marks[count++] = t.price;
-      }
-      drawRangeChart(s, box, pageRange(), marks, count);
-    }
-  } else {
+  display().fillRect(0, BODY_Y, cfg::SCREEN_W, BODY_H, ui::pal().bg);
+  if (!isChartPage()) {
     drawStatsPage(s);
+    return;
   }
-}
-
-// The shared top: company name, price, change and the stale note.
-static void drawTop(const SymbolState& s) {
-  DFRobot_GDL& gfx = display();
-  const Quote& q = s.quote;
-  int staleMin = staleMinutes(s);
-  char buf[48];
-
-  // Full company name (from Finnhub's profile, saved in flash). Size 2 fits 38
-  // characters across; longer names end in "..".
-  gfx.fillRect(0, NAME_Y - 2, cfg::SCREEN_W, 20, theme::BG);
-  if (s.profile.valid) {
-    const int MAX_CHARS = (cfg::SCREEN_W - 20) / 12;
-    if ((int)strlen(s.profile.name) > MAX_CHARS) {
-      snprintf(buf, sizeof(buf), "%.*s..", MAX_CHARS - 2, s.profile.name);
-    } else {
-      snprintf(buf, sizeof(buf), "%s", s.profile.name);
-    }
-    gfx.setTextSize(2);
-    gfx.setTextColor(theme::STAT_LABEL, theme::BG);   // amber, like the stat labels
-    gfx.setCursor(10, NAME_Y);
-    gfx.print(buf);
+  if (compare) {
+    drawCompareChart(s, benchmark(), CMP_BOX, pageRange());
+    drawnBenchVersion = benchmark().version;
+    return;
   }
-
-  // Big price (grey when stale) + change line
-  gfx.setTextSize(4);
-  gfx.setTextColor(staleMin >= 0 ? theme::DIM : theme::TEXT, theme::BG);
-  gfx.setCursor(10, PRICE_Y);
-  // Left-aligned like the name, with the change following right after it.
-  snprintf(buf, sizeof(buf), "%.2f", q.price);
-  gfx.print(buf);
-  int16_t priceEnd = 10 + (int16_t)strlen(buf) * 24;   // size 4 = 24 px per character
-  // Clear everything right of the price (an older, longer price or change text).
-  gfx.fillRect(priceEnd, PRICE_Y, cfg::SCREEN_W - priceEnd, 32, theme::BG);
-  // The change follows the selected chart range (1D, the day's change, on the stats page).
-  ChartRange range = isChartPage() ? pageRange() : ChartRange::Day;
-  float ref;
-  gfx.setTextSize(2);
-  gfx.setCursor(priceEnd + 16, PRICE_Y + 14);   // bottom-aligned with the big digits
-  if (rangeReference(s, range, ref)) {
-    float delta = q.price - ref;
-    gfx.setTextColor(theme::changeColor(delta), theme::BG);
-    snprintf(buf, sizeof(buf), "%+.2f (%+.2f%%) ", delta, delta / ref * 100.0f);
-  } else {
-    gfx.setTextColor(theme::LABEL, theme::BG);
-    snprintf(buf, sizeof(buf), "-- ");   // not enough history for this range yet
+  float marks[2];   // armed price targets (8C)
+  int count = 0;
+  for (int side = 0; side < 2; side++) {
+    PriceTarget t = targetGet(ticker, side == 0);
+    if (targetArmed(t)) marks[count++] = t.price;
   }
-  gfx.print(buf);
-  gfx.setTextColor(theme::LABEL, theme::BG);   // which range the change covers
-  gfx.print(rangeName(range));
-
-  // Stale note under the price
-  gfx.fillRect(10, PRICE_Y + 35, 260, 10, theme::BG);
-  if (staleMin >= 0) {
-    gfx.setTextSize(1);
-    gfx.setTextColor(theme::ACCENT, theme::BG);
-    gfx.setCursor(10, PRICE_Y + 36);
-    snprintf(buf, sizeof(buf), "DELAYED: last update %d min ago", staleMin);
-    gfx.print(buf);
-  }
-  drawnStaleMin = staleMin;
+  drawRangeChart(s, DAY_BOX, pageRange(), marks, count);
 }
 
 void drawFull(int ticker, bool pinned, Page newPage) {
   page = newPage;
-  display().fillScreen(theme::BG);
-  drawHeader(ticker, pinned);
+  display().fillScreen(ui::pal().bg);
+  drawHeader(stock(ticker), pinned);
   drawTop(stock(ticker));
   drawBody(ticker);
-  drawTabs();
+  drawButtons();
   drawnVersion = stock(ticker).version;
   drawnBarW = -1;
 }
@@ -306,10 +277,9 @@ void drawFull(int ticker, bool pinned, Page newPage) {
 void setPage(int ticker, Page newPage) {
   if (newPage == page) return;
   page = newPage;
-  display().fillRect(0, BODY_Y, cfg::SCREEN_W, BODY_H, theme::BG);
-  drawTop(stock(ticker));   // the change under the price depends on the page
+  drawTop(stock(ticker));   // the change in the price row depends on the page
   drawBody(ticker);
-  drawTabs();
+  drawButtons();
 }
 
 void update(int ticker) {
@@ -317,7 +287,7 @@ void update(int ticker) {
   bool staleChanged = staleMinutes(s) != drawnStaleMin;
   bool benchChanged = compare && isChartPage() && benchmark().version != drawnBenchVersion;
   if (s.version == drawnVersion && !staleChanged && !benchChanged) return;
-  if (s.version != drawnVersion || staleChanged) drawTop(s);
+  drawTop(s);
   if (s.version != drawnVersion || benchChanged) drawBody(ticker);   // a stale tick alone doesn't change the body
   drawnVersion = s.version;
 }
@@ -325,7 +295,11 @@ void update(int ticker) {
 void setCompare(int ticker, bool on) {
   if (on == compare) return;
   compare = on;
-  if (isChartPage()) drawBody(ticker);
+  drawButtons();
+  if (isChartPage()) {
+    drawTop(stock(ticker));
+    drawBody(ticker);
+  }
 }
 
 void resetCompare() {
@@ -338,36 +312,45 @@ bool compareOn() {
 
 bool isChartTap(int16_t x, int16_t y) {
   (void)x;
-  return isChartPage() && y >= BODY_Y && y < BODY_Y + BODY_H;
+  return isChartPage() && y >= DAY_BOX.y - 8 && y < DAY_BOX.y + DAY_BOX.h + 4;
 }
 
 void drawCountdown(float remaining) {
   if (remaining < 0) remaining = 0;
-  int16_t w = (int16_t)(remaining * cfg::SCREEN_W);
+  const int16_t full = cfg::SCREEN_W - 16;
+  int16_t w = (int16_t)(remaining * full);
   if (w == drawnBarW) return;   // only touch the screen when a pixel actually changes
   DFRobot_GDL& gfx = display();
-  gfx.fillRect(0, BAR_Y, w, BAR_H, theme::ACCENT);
-  gfx.fillRect(w, BAR_Y, cfg::SCREEN_W - w, BAR_H, theme::BG);
+  gfx.fillRect(8, COUNT_Y, w, COUNT_H, ui::pal().dim);
+  gfx.fillRect(8 + w, COUNT_Y, full - w, COUNT_H, ui::pal().bg);
   drawnBarW = w;
 }
 
 void setPinned(bool pinned) {
   drawBadge(pinned);
   if (pinned) {
-    display().fillRect(0, BAR_Y, cfg::SCREEN_W, BAR_H, theme::BG);   // no countdown when pinned
+    display().fillRect(8, COUNT_Y, cfg::SCREEN_W - 16, COUNT_H, ui::pal().bg);   // no countdown when pinned
     drawnBarW = 0;
   }
 }
 
 bool isBackTap(int16_t x, int16_t y) {
-  // Generous target: a fingertip is ~40 px wide, so accept taps a bit beyond the box.
-  return x < BACK_W + 40 && y < HEADER_H + 20;
+  // Generous target: a fingertip is ~40 px wide, so accept taps a bit beyond the text.
+  return x < 96 && y < ui::BAR_H + 16;
 }
 
 int tabAt(int16_t x, int16_t y) {
-  if (y < TAB_Y - 8) return -1;   // a little extra room above the tabs for a fingertip
-  int tab = x / (cfg::SCREEN_W / TAB_COUNT);
-  return tab < TAB_COUNT ? tab : -1;
+  if (y < BTN_Y - 6) return -1;   // a little extra room above the buttons for a fingertip
+  if (x < STATS_X - 6) {
+    int i = (x - RANGE_X) / RANGE_W;
+    return i < 0 ? 0 : (i > 3 ? 3 : i);
+  }
+  if (x < CMP_X - 4) return (int)Page::Stats;
+  return -1;
+}
+
+bool isCompareTap(int16_t x, int16_t y) {
+  return y >= BTN_Y - 6 && x >= CMP_X - 4;
 }
 
 }  // namespace detail

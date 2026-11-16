@@ -7,18 +7,23 @@
 #include "hal/display.h"
 #include "market_calendar.h"
 #include "net/time_sync.h"
-#include "ui/theme.h"
+#include "ui/gfx.h"
+#include "ui/palette.h"
 
-static const int16_t LABEL_W = 52;   // price label column on the right
-static const int16_t TIME_H = 14;    // time label row underneath
-static const int MAX_PRICE_LABELS = 5;
+using ui::Align;
+
+static const int16_t AXIS_GAP = 8;      // plot's right edge -> price label column
+static const int16_t TAG_W = 62;        // "T 132.50" / "P 129.90" tags in that column
+static const int16_t TIME_GAP = 6;      // plot's bottom -> time row
+static const int16_t LEGEND_GAP = 23;   // plot's bottom -> legend row
+static const int MAX_AXIS_LABELS = 8;
 static const int MAX_POINTS = 480;   // 5D: up to 70 backfilled bars + 390 of today's points
 static const int MAX_X_LABELS = 8;
 static const int MAX_SEPARATORS = 6;
 
-static const char* const DAYS[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
-static const char* const MONTHS[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+static const char* const DAYS[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
+static const char* const MONTHS[] = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+                                     "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
 
 // What a range builder hands to the renderer: points placed across the chart as a
 // fraction (0 = left edge, 1 = right edge), plus labels and day separators.
@@ -32,7 +37,7 @@ struct ChartData {
   int separators;
   float separatorFrac[MAX_SEPARATORS];
   bool showPrevClose;
-  char cornerTag[16];      // e.g. "Fri Nov 6" for an older session; "" for none
+  char cornerTag[16];      // e.g. "FRI NOV 6" when the chart shows an older session; "" for none
   const char* empty1;      // message when there's nothing to draw
   const char* empty2;
 };
@@ -44,7 +49,7 @@ static void resetData() {
   data.separators = 0;
   data.showPrevClose = false;
   data.cornerTag[0] = '\0';
-  data.empty1 = "No chart yet";
+  data.empty1 = "NO CHART YET";
   data.empty2 = "";
 }
 
@@ -91,7 +96,7 @@ static void tagSessionDate(uint32_t unixTime) {
 // Today's session, 9:30 to the close, points at their time of day.
 static void buildDay(const SymbolState& s) {
   const PriceSeries& series = s.intraday;
-  data.empty2 = "fills in from 9:30";
+  data.empty2 = "FILLS IN FROM 9:30";
   data.showPrevClose = true;
   if (series.size() < 2) return;
 
@@ -107,20 +112,23 @@ static void buildDay(const SymbolState& s) {
     uint32_t t = series.timeAt(i);
     addPoint(t < open ? 0 : (t - open) / span, series.at(i));
   }
-  // Labels every 90 min (60 min on 1 pm early-close days), starting at 9:30.
+  // Labels every 90 min (60 min on 1 pm early-close days) from 9:30, and the close at the
+  // end (a regular label too close to it is left out, e.g. 3:30 before 4:00).
   uint32_t step = (close - open) > 4 * 3600 ? 90 * 60 : 60 * 60;
   char buf[8];
-  for (uint32_t t = open; t <= close; t += step) {
+  for (uint32_t t = open; t + step * 3 / 4 <= close; t += step) {
     clockLabel(t, buf, sizeof(buf));
     addLabel((t - open) / span, buf);
   }
+  clockLabel(close, buf, sizeof(buf));
+  addLabel(1.0f, buf);
   if (!newestIsToday(series)) tagSessionDate(series.timeAt(series.size() - 1));
 }
 
 // The last 60 minutes of today's points.
 static void buildHour(const SymbolState& s) {
   const PriceSeries& series = s.intraday;
-  data.empty2 = "fills in from 9:30";
+  data.empty2 = "FILLS IN FROM 9:30";
   if (series.size() < 2 || !series.hasTimes()) return;
 
   uint32_t end = series.timeAt(series.size() - 1);
@@ -131,8 +139,8 @@ static void buildHour(const SymbolState& s) {
   }
   if (data.n < 2) {
     data.n = 0;
-    data.empty1 = "Not enough points";
-    data.empty2 = "in the last hour";
+    data.empty1 = "NOT ENOUGH POINTS";
+    data.empty2 = "IN THE LAST HOUR";
     return;
   }
   // A label on every quarter hour (Eastern offsets are whole hours, so UTC quarters line up).
@@ -144,15 +152,16 @@ static void buildHour(const SymbolState& s) {
   if (!newestIsToday(series)) tagSessionDate(end);
 }
 
-// The last 5 sessions side by side (nights and weekends left out): backfilled 30-minute
-// closes for earlier days, today's own points for the newest day.
+// The last 5 sessions side by side (nights and weekends left out), every day at the same
+// 30-minute steps: backfilled closes for earlier days; for the newest day (the one the live
+// quotes belong to) the backfilled bars where there are any, live quotes for the rest.
 static void buildFiveDay(const SymbolState& s) {
   const PriceSeries& series = s.intraday;
   const History& h = s.history;
-  data.empty1 = "No 5-day history yet";
-  data.empty2 = h.valid ? "" : "needs Twelve Data key";
+  data.empty1 = "NO 5-DAY HISTORY YET";
+  data.empty2 = h.valid ? "" : "NEEDS TWELVE DATA KEY";
 
-  // Collect times + prices, oldest first, without duplicating the live session.
+  // Collect times + prices, oldest first; the live session's bars are merged in below.
   static uint32_t times[MAX_POINTS];
   static float prices[MAX_POINTS];
   int count = 0;
@@ -161,17 +170,13 @@ static void buildFiveDay(const SymbolState& s) {
   if (live) sessionBounds(series.timeAt(series.size() - 1), liveOpen, liveClose);
   for (int i = 0; i < h.barCount && count < MAX_POINTS; i++) {
     uint32_t t = h.barTime[i];
-    if (live && t > liveOpen && t <= liveClose) continue;   // that day comes from live points
+    if (live && t > liveOpen && t <= liveClose) continue;   // the live session comes next
     times[count] = t;
     prices[count] = h.barClose[i];
     count++;
   }
   if (live) {
-    for (size_t i = 0; i < series.size() && count < MAX_POINTS; i++) {
-      times[count] = series.timeAt(i);
-      prices[count] = series.at(i);
-      count++;
-    }
+    count += sessionHalfHours(series, h, liveOpen, liveClose, times + count, prices + count, MAX_POINTS - count);
   }
   if (count < 2) return;
 
@@ -215,8 +220,8 @@ static void buildFiveDay(const SymbolState& s) {
 // ~21 daily closes before today, plus today's price as the last point.
 static void buildMonth(const SymbolState& s) {
   const History& h = s.history;
-  data.empty1 = "No 1-month history yet";
-  data.empty2 = h.valid ? "" : "needs Twelve Data key";
+  data.empty1 = "NO 1-MONTH HISTORY YET";
+  data.empty2 = h.valid ? "" : "NEEDS TWELVE DATA KEY";
   EtTime now;
   if (!timeNowET(now)) return;
   int32_t current = lastSessionDay(now);
@@ -237,7 +242,7 @@ static void buildMonth(const SymbolState& s) {
     days[k] = current;
     addPoint(1.0f, s.quote.price);
   }
-  // Dates on about 4 evenly spaced days, e.g. "Oct 12"
+  // Dates on about 4 evenly spaced days, e.g. "OCT 12"
   int step = total > 4 ? (total - 1) / 4 : 1;
   for (int i = 0; i < total; i += step) {
     time_t t = (time_t)days[i] * 86400 + 12 * 3600;   // midday UTC: safely inside that date
@@ -247,20 +252,6 @@ static void buildMonth(const SymbolState& s) {
     snprintf(buf, sizeof(buf), "%s %d", MONTHS[d.tm_mon], d.tm_mday);
     addLabel((float)i / (total - 1), buf);
   }
-}
-
-// ---------- renderer ----------
-
-static void smallText(int16_t x, int16_t y, uint16_t color, uint16_t bg, const char* s) {
-  DFRobot_GDL& gfx = display();
-  gfx.setTextSize(1);   // 6 px wide per character, 8 px tall
-  gfx.setTextColor(color, bg);
-  gfx.setCursor(x, y);
-  gfx.print(s);
-}
-
-static int16_t clampI(int16_t v, int16_t lo, int16_t hi) {
-  return v < lo ? lo : (v > hi ? hi : v);
 }
 
 static void buildRange(const SymbolState& s, ChartRange range) {
@@ -273,51 +264,110 @@ static void buildRange(const SymbolState& s, ChartRange range) {
   }
 }
 
-// The plotted area inside a chart box, leaving room for the labels.
+// ---------- renderer ----------
+
+static int16_t clampI(int16_t v, int16_t lo, int16_t hi) {
+  return v < lo ? lo : (v > hi ? hi : v);
+}
+
 struct Plot {
-  int16_t px, py, pw, ph, pRight, pBottom;
-  explicit Plot(const ChartBox& box)
-      : px(box.x + 2), py(box.y + 4), pw(box.w - LABEL_W - 4), ph(box.h - TIME_H - 6),
-        pRight(px + pw - 1), pBottom(py + ph - 1) {}
-  int16_t toX(float frac) const { return (int16_t)(px + frac * (pw - 1)); }
+  int16_t x, y, w, h;
+  float lo, hi;   // the value range from the bottom edge to the top edge
+  explicit Plot(const ChartBox& b) : x(b.x), y(b.y), w(b.w), h(b.h), lo(0), hi(1) {}
+  int16_t toX(float frac) const { return x + (int16_t)lroundf(frac * (w - 1)); }
+  int16_t toY(float v) const { return mapToPixel(v, lo, hi, y + h - 1, y); }
+  int16_t axisX() const { return x + w + AXIS_GAP; }
 };
 
-// Frame plus data.empty1/2 in the middle, when there's nothing to plot.
-static void drawEmpty(const Plot& p) {
-  DFRobot_GDL& gfx = display();
-  gfx.drawRect(p.px - 1, p.py - 1, p.pw + 2, p.ph + 2, theme::FRAME);
-  gfx.setTextSize(2);
-  gfx.setTextColor(theme::LABEL, theme::BG);
-  gfx.setCursor(p.px + p.pw / 2 - (int16_t)strlen(data.empty1) * 6, p.py + p.ph / 2 - 18);
-  gfx.print(data.empty1);
-  gfx.setCursor(p.px + p.pw / 2 - (int16_t)strlen(data.empty2) * 6, p.py + p.ph / 2 + 4);
-  gfx.print(data.empty2);
+// The value range: the data (plus anything else that must show) with 8 % room above and
+// below, and round label values inside it (at most MAX_AXIS_LABELS).
+static int axisValues(Plot& p, float lo, float hi, float* values, float& step) {
+  float span = hi - lo;
+  float minSpan = fabsf(hi) * 0.004f > 0.02f ? fabsf(hi) * 0.004f : 0.02f;   // a flat line still gets a range
+  if (span < minSpan) {
+    float mid = (lo + hi) / 2;
+    lo = mid - minSpan / 2;
+    hi = mid + minSpan / 2;
+    span = minSpan;
+  }
+  p.lo = lo - span * 0.08f;
+  p.hi = hi + span * 0.08f;
+  step = niceAxis(p.lo, p.hi, 7).step;   // 7 ticks around the range = about 5 labels inside it
+  int n = 0;
+  for (float v = ceilf(p.lo / step) * step; v <= p.hi && n < MAX_AXIS_LABELS; v += step) values[n++] = v;
+  return n;
 }
 
-// Labels underneath with faint vertical gridlines, brighter lines between days, the
-// frame, and the older-session date tag.
-static void drawXAxis(const Plot& p) {
-  DFRobot_GDL& gfx = display();
+// Gridlines: 1 px dots every 4 px at each label value, a little brighter than the row
+// separators (dots that sparse in the separator color were hard to see).
+static uint16_t gridColor() {
+  return ui::mix(ui::pal().line, ui::pal().dim, 80);
+}
+
+static void drawGrid(const Plot& p, const float* values, int n) {
+  for (int i = 0; i < n; i++) ui::dashedHLine(p.x, p.toY(values[i]), p.w, gridColor(), 1, 3);
+}
+
+// SPY's line and legend on the compare chart: a light grey, between the secondary text and
+// the main text, so the thin line stands out from the background.
+static uint16_t benchColor() {
+  return ui::mix(ui::pal().dim, ui::pal().text, 128);
+}
+
+// A tag in the label column: colored box with dark text, centered on its line.
+struct Tag {
+  int16_t y;
+  char text[12];
+  uint16_t bg;
+};
+
+// Labels in the column right of the plot; a tag replaces any label within 12 px of it.
+static void drawAxis(const Plot& p, const float* values, int n, const char* const* texts, Tag* tags, int tagCount) {
+  const ui::Palette& c = ui::pal();
+  // Keep tags 12 px apart (the later one moves down, or up near the bottom).
+  for (int i = 1; i < tagCount; i++) {
+    for (int j = 0; j < i; j++) {
+      if (abs(tags[i].y - tags[j].y) < 12) tags[i].y = tags[j].y + (tags[j].y + 18 > p.y + p.h ? -12 : 12);
+    }
+  }
+  int16_t ax = p.axisX();
+  for (int i = 0; i < n; i++) {
+    int16_t y = p.toY(values[i]);
+    bool hidden = false;
+    for (int t = 0; t < tagCount; t++) hidden |= abs(y - tags[t].y) < 12;
+    if (!hidden) ui::text(ax, y - 4, texts[i], 1, c.dim, c.bg);
+  }
+  for (int t = 0; t < tagCount; t++) {
+    display().fillRect(ax - 2, tags[t].y - 6, TAG_W, 12, tags[t].bg);
+    ui::text(ax + 1, tags[t].y - 4, tags[t].text, 1, c.bg, tags[t].bg);
+  }
+}
+
+// Time / weekday / date labels under the plot, and separator lines between days (5D).
+static void drawTimeRow(const Plot& p) {
+  const ui::Palette& c = ui::pal();
+  int16_t y = p.y + p.h + TIME_GAP;
   for (int i = 0; i < data.labels; i++) {
-    int16_t x = p.toX(data.labelFrac[i]);
-    if (data.separators == 0) gfx.drawFastVLine(x, p.py, p.ph, theme::GRID);
-    int16_t w = strlen(data.labelText[i]) * 6;
-    smallText(clampI(x - w / 2, p.px, p.pRight - w), p.pBottom + 5, theme::LABEL, theme::BG, data.labelText[i]);
+    int16_t w = ui::textWidth(data.labelText[i], 1);
+    int16_t x = clampI(p.toX(data.labelFrac[i]) - w / 2, p.x, p.x + p.w - w);
+    ui::text(x, y, data.labelText[i], 1, c.dim, c.bg);
   }
-  for (int i = 0; i < data.separators; i++) gfx.drawFastVLine(p.toX(data.separatorFrac[i]), p.py, p.ph, theme::FRAME);
-  gfx.drawRect(p.px - 1, p.py - 1, p.pw + 2, p.ph + 2, theme::FRAME);
-  if (data.cornerTag[0]) {
-    smallText(p.pRight - (int16_t)strlen(data.cornerTag) * 6 - 3, p.py + 3, theme::ACCENT, theme::BG, data.cornerTag);
-  }
+  for (int i = 0; i < data.separators; i++) display().drawFastVLine(p.toX(data.separatorFrac[i]), p.y, p.h, c.edge);
 }
 
-// A line through data points, 2 px thick if `thick`.
-static void drawSeries(const Plot& p, const float* frac, const float* values, int n, float lo, float hi,
-                       uint16_t color, bool thick) {
+static void drawEmpty(const Plot& p) {
+  const ui::Palette& c = ui::pal();
+  int16_t cx = p.x + p.w / 2, cy = p.y + p.h / 2;
+  ui::text(cx, cy - 18, data.empty1, 2, c.dim, c.bg, Align::Center);
+  if (data.empty2[0]) ui::text(cx, cy + 4, data.empty2, 2, c.dim, c.bg, Align::Center);
+}
+
+// A line through data points, 2 px tall if `thick`.
+static void drawSeries(const Plot& p, const float* frac, const float* values, int n, uint16_t color, bool thick) {
   DFRobot_GDL& gfx = display();
-  int16_t prevX = p.toX(frac[0]), prevY = mapToPixel(values[0], lo, hi, p.pBottom, p.py);
+  int16_t prevX = p.toX(frac[0]), prevY = p.toY(values[0]);
   for (int i = 1; i < n; i++) {
-    int16_t x = p.toX(frac[i]), y = mapToPixel(values[i], lo, hi, p.pBottom, p.py);
+    int16_t x = p.toX(frac[i]), y = p.toY(values[i]);
     gfx.drawLine(prevX, prevY, x, y, color);
     if (thick) gfx.drawLine(prevX, prevY + 1, x, y + 1, color);
     prevX = x;
@@ -325,101 +375,102 @@ static void drawSeries(const Plot& p, const float* frac, const float* values, in
   }
 }
 
+// Prices in at most 7 characters: 132.50, 1232.5, 12345
+static void formatPrice(char* buf, size_t size, float v) {
+  if (v >= 10000) snprintf(buf, size, "%.0f", v);
+  else if (v >= 1000) snprintf(buf, size, "%.1f", v);
+  else snprintf(buf, size, "%.2f", v);
+}
+
 void drawRangeChart(const SymbolState& s, const ChartBox& box, ChartRange range, const float* marks,
                     int markCount) {
   buildRange(s, range);
-
-  DFRobot_GDL& gfx = display();
-  const Quote& q = s.quote;
-  const Plot plot(box);
-  const int16_t px = plot.px, py = plot.py, pw = plot.pw, ph = plot.ph;
-  const int16_t pRight = plot.pRight, pBottom = plot.pBottom;
-  auto toX = [&](float frac) { return plot.toX(frac); };
-
-  gfx.fillRect(box.x, box.y, box.w, box.h, theme::BG);
-
+  const ui::Palette& c = ui::pal();
+  Plot plot(box);
   if (data.n < 2) {
     drawEmpty(plot);
     return;
   }
 
-  // ---- price axis: round label values covering the prices (and the previous close) ----
+  // ---- value range: the prices, the previous close (1D), and targets close to them ----
   float lo = data.price[0], hi = data.price[0];
   for (int i = 1; i < data.n; i++) {
     if (data.price[i] < lo) lo = data.price[i];
     if (data.price[i] > hi) hi = data.price[i];
   }
-  bool prevLine = data.showPrevClose && q.prevClose > 0;
+  float prev = s.quote.prevClose;
+  bool prevLine = data.showPrevClose && prev > 0;
   if (prevLine) {
-    if (q.prevClose < lo) lo = q.prevClose;
-    if (q.prevClose > hi) hi = q.prevClose;
+    if (prev < lo) lo = prev;
+    if (prev > hi) hi = prev;
   }
-  AxisTicks ticks = niceAxis(lo, hi, MAX_PRICE_LABELS);
-  int decimals = labelDecimals(ticks.step, ticks.hi);
-  auto toY = [&](float v) { return mapToPixel(v, ticks.lo, ticks.hi, pBottom, py); };
-  char buf[24];
-
-  for (int k = 0; k < ticks.count; k++) {
-    float v = ticks.lo + k * ticks.step;
-    int16_t y = toY(v);
-    gfx.drawFastHLine(px, y, pw, theme::GRID);
-    snprintf(buf, sizeof(buf), "%.*f", decimals, v);
-    smallText(pRight + 6, y - 3, theme::LABEL, theme::BG, buf);
+  float dataLo = lo, dataHi = hi, near = hi - lo;
+  for (int m = 0; m < markCount; m++) {   // within one chart-height of the prices: widen to fit
+    if (marks[m] < lo && marks[m] >= dataLo - near) lo = marks[m];
+    if (marks[m] > hi && marks[m] <= dataHi + near) hi = marks[m];
+  }
+  float values[MAX_AXIS_LABELS], step;
+  int n = axisValues(plot, lo, hi, values, step);
+  int decimals = labelDecimals(step, plot.hi);
+  char texts[MAX_AXIS_LABELS][12];
+  const char* textPtr[MAX_AXIS_LABELS];
+  for (int i = 0; i < n; i++) {
+    snprintf(texts[i], sizeof(texts[i]), "%.*f", decimals, values[i]);
+    textPtr[i] = texts[i];
   }
 
-  drawXAxis(plot);
-
-  // ---- previous close (1D only): dashed line with its value ----
+  drawGrid(plot, values, n);
+  Tag tags[3];
+  int tagCount = 0;
   if (prevLine) {
-    int16_t y = toY(q.prevClose);
-    for (int16_t dx = 0; dx < pw; dx += 8) gfx.drawFastHLine(px + dx, y, 4, theme::LABEL);
-    snprintf(buf, sizeof(buf), "PREV %.2f", q.prevClose);
-    int16_t ly = (y - 11 >= py + 1) ? y - 11 : y + 4;   // above the line, or below near the top
-    smallText(px + 4, ly, theme::LABEL, theme::BG, buf);
+    int16_t y = plot.toY(prev);
+    ui::dashedHLine(plot.x, y, plot.w, c.dim, 4, 4);
+    tags[tagCount].y = y;
+    tags[tagCount].bg = c.dim;
+    char p[10];
+    formatPrice(p, sizeof(p), prev);
+    snprintf(tags[tagCount].text, sizeof(tags[0].text), "P %s", p);
+    tagCount++;
+  }
+  bool anyTarget = false;
+  for (int m = 0; m < markCount && tagCount < 3; m++) {
+    if (marks[m] < plot.lo || marks[m] > plot.hi) continue;
+    int16_t y = plot.toY(marks[m]);
+    ui::dashedHLine(plot.x, y, plot.w, c.target, 6, 4);
+    tags[tagCount].y = y;
+    tags[tagCount].bg = c.target;
+    char p[10];
+    formatPrice(p, sizeof(p), marks[m]);
+    snprintf(tags[tagCount].text, sizeof(tags[0].text), "T %s", p);
+    tagCount++;
+    anyTarget = true;
   }
 
-  // ---- price targets: amber dashed lines with their value, right-aligned ----
-  for (int m = 0; m < markCount; m++) {
-    float v = marks[m];
-    if (v < ticks.lo || v > ticks.hi) continue;
-    int16_t y = toY(v);
-    for (int16_t dx = 4; dx < pw; dx += 8) gfx.drawFastHLine(px + dx, y, 4, theme::ACCENT);
-    snprintf(buf, sizeof(buf), "TARGET %.2f", v);
-    int16_t ty = (y - 11 >= py + 1) ? y - 11 : y + 4;
-    smallText(pRight - (int16_t)strlen(buf) * 6 - 3, ty, theme::ACCENT, theme::BG, buf);
-  }
-
-  // ---- the price line, 2 px thick, colored by the range's change ----
+  // ---- the price line, 2 px, colored by the range's change ----
   float ref;
   float last = data.price[data.n - 1];
   bool up = rangeReference(s, range, ref) ? last >= ref : last >= data.price[0];
-  uint16_t color = up ? theme::UP : theme::DOWN;
-  drawSeries(plot, data.frac, data.price, data.n, ticks.lo, ticks.hi, color, true);
+  drawSeries(plot, data.frac, data.price, data.n, up ? c.up : c.down, true);
 
-  // ---- high / low over the range: small triangles pointing at them, with values ----
-  int iMax = 0, iMin = 0;
-  for (int i = 1; i < data.n; i++) {
-    if (data.price[i] > data.price[iMax]) iMax = i;
-    if (data.price[i] < data.price[iMin]) iMin = i;
+  drawAxis(plot, values, n, textPtr, tags, tagCount);
+  drawTimeRow(plot);
+
+  // ---- legend row: what T and P mean; an older session's date on the right ----
+  int16_t ly = plot.y + plot.h + LEGEND_GAP;
+  int16_t x = plot.x;
+  if (anyTarget) {
+    display().fillRect(x, ly + 3, 10, 2, c.target);
+    x = ui::text(x + 14, ly, "T = PRICE TARGET", 1, c.dim, c.bg) + 22;
   }
-  int16_t hx = toX(data.frac[iMax]), hy = toY(data.price[iMax]);
-  int16_t lx = toX(data.frac[iMin]), ly2 = toY(data.price[iMin]);
-  gfx.fillTriangle(hx - 4, hy - 8, hx + 4, hy - 8, hx, hy - 3, theme::TEXT);
-  gfx.fillTriangle(lx - 4, ly2 + 8, lx + 4, ly2 + 8, lx, ly2 + 3, theme::TEXT);
-  snprintf(buf, sizeof(buf), "H %.2f", data.price[iMax]);
-  int16_t tw = strlen(buf) * 6;
-  smallText(clampI(hx - tw / 2, px + 2, pRight - tw), clampI(hy - 18, py + 2, pBottom - 8),
-            theme::TEXT, theme::BG, buf);
-  snprintf(buf, sizeof(buf), "L %.2f", data.price[iMin]);
-  tw = strlen(buf) * 6;
-  smallText(clampI(lx - tw / 2, px + 2, pRight - tw), clampI(ly2 + 10, py + 2, pBottom - 8),
-            theme::TEXT, theme::BG, buf);
-
-  // ---- last price: a tag in the label column, in the line's color ----
-  int16_t tagY = clampI(toY(last) - 6, box.y, pBottom - 6);
-  gfx.fillRect(pRight + 3, tagY, LABEL_W - 1, 12, color);
-  snprintf(buf, sizeof(buf), "%.*f", decimals, last);
-  smallText(pRight + 6, tagY + 2, theme::BG, color, buf);
+  if (prevLine) {
+    ui::dashedHLine(x, ly + 3, 12, c.dim, 3, 3);
+    ui::text(x + 16, ly, "P = PREVIOUS CLOSE", 1, c.dim, c.bg);
+  }
+  if (data.cornerTag[0]) {
+    char tag[32];
+    snprintf(tag, sizeof(tag), "SESSION OF %s", data.cornerTag);
+    ui::text(plot.axisX() + TAG_W - 2, ly, tag, 1, c.target, c.bg, Align::Right);
+  }
 }
 
 bool rangeReference(const SymbolState& s, ChartRange range, float& reference) {
@@ -483,16 +534,36 @@ void drawCompareChart(const SymbolState& s, const SymbolState& bench, const Char
   bool haveBench = benchN >= 2 && toPercent(bench, range, benchPct, benchN);
   buildRange(s, range);
 
-  DFRobot_GDL& gfx = display();
-  const Plot plot(box);
-  gfx.fillRect(box.x, box.y, box.w, box.h, theme::BG);
+  const ui::Palette& c = ui::pal();
+  Plot plot(box);
   if (data.n < 2) {
     drawEmpty(plot);
     return;
   }
   toPercent(s, range, data.price, data.n);
+  float last = data.price[data.n - 1];
+  uint16_t color = last >= 0 ? c.up : c.down;
 
-  // % axis covering both lines and 0 %
+  // ---- legend row above the plot: "NVDA +1.24%  SPY +0.41%  ...  = +0.83% VS SPY" ----
+  int16_t ly = plot.y - 16;
+  char buf[48];
+  float stockPct, spyPct;
+  if (compareFigures(s, bench, range, stockPct, spyPct)) {
+    display().fillRect(plot.x, ly + 3, 10, 3, color);
+    snprintf(buf, sizeof(buf), "%s %+.2f%%", s.symbol, stockPct);
+    int16_t x = ui::text(plot.x + 14, ly, buf, 1, color, c.bg) + 22;
+    display().drawFastHLine(x, ly + 4, 10, benchColor());
+    snprintf(buf, sizeof(buf), "%s %+.2f%%", bench.symbol, spyPct);
+    ui::text(x + 14, ly, buf, 1, benchColor(), c.bg);
+    float rel = stockPct - spyPct;
+    snprintf(buf, sizeof(buf), "= %+.2f%% VS %s", rel, bench.symbol);
+    ui::text(plot.x + plot.w, ly, buf, 1, rel >= 0 ? c.up : c.down, c.bg, Align::Right);
+  } else {
+    snprintf(buf, sizeof(buf), "%s VS %s: WAITING FOR %s DATA", s.symbol, bench.symbol, bench.symbol);
+    ui::text(plot.x, ly, buf, 1, c.dim, c.bg);
+  }
+
+  // ---- % range covering both lines and 0 % ----
   float lo = 0, hi = 0;
   for (int i = 0; i < data.n; i++) {
     if (data.price[i] < lo) lo = data.price[i];
@@ -502,50 +573,21 @@ void drawCompareChart(const SymbolState& s, const SymbolState& bench, const Char
     if (benchPct[i] < lo) lo = benchPct[i];
     if (benchPct[i] > hi) hi = benchPct[i];
   }
-  AxisTicks ticks = niceAxis(lo, hi, MAX_PRICE_LABELS);
-  int decimals = percentDecimals(ticks.step);
-  char buf[48];
-  for (int k = 0; k < ticks.count; k++) {
-    float v = ticks.lo + k * ticks.step;
-    int16_t y = mapToPixel(v, ticks.lo, ticks.hi, plot.pBottom, plot.py);
-    gfx.drawFastHLine(plot.px, y, plot.pw, theme::GRID);
-    if (fabsf(v) < ticks.step / 2) snprintf(buf, sizeof(buf), "0%%");
-    else snprintf(buf, sizeof(buf), "%+.*f%%", decimals, v);
-    smallText(plot.pRight + 6, y - 3, theme::LABEL, theme::BG, buf);
-  }
-  drawXAxis(plot);
-
-  // 0 % = the reference price: dashed, like the previous-close line
-  int16_t zeroY = mapToPixel(0, ticks.lo, ticks.hi, plot.pBottom, plot.py);
-  for (int16_t dx = 0; dx < plot.pw; dx += 8) gfx.drawFastHLine(plot.px + dx, zeroY, 4, theme::LABEL);
-
-  // SPY thin and grey underneath, the stock on top in its color
-  if (haveBench) drawSeries(plot, benchFrac, benchPct, benchN, ticks.lo, ticks.hi, theme::LABEL, false);
-  float last = data.price[data.n - 1];
-  uint16_t color = theme::changeColor(last);
-  drawSeries(plot, data.frac, data.price, data.n, ticks.lo, ticks.hi, color, true);
-
-  // Legend, top left: "NVDA +2.10%  SPY +0.90%  +1.20% vs SPY"
-  int16_t x = plot.px + 4, y = plot.py + 3;
-  float stockPct, spyPct;
-  if (compareFigures(s, bench, range, stockPct, spyPct)) {
-    snprintf(buf, sizeof(buf), "%s %+.2f%%", s.symbol, stockPct);
-    smallText(x, y, color, theme::BG, buf);
-    x += (int16_t)strlen(buf) * 6 + 12;
-    snprintf(buf, sizeof(buf), "%s %+.2f%%", bench.symbol, spyPct);
-    smallText(x, y, theme::LABEL, theme::BG, buf);
-    x += (int16_t)strlen(buf) * 6 + 12;
-    float rel = stockPct - spyPct;
-    snprintf(buf, sizeof(buf), "%+.2f%% vs %s", rel, bench.symbol);
-    smallText(x, y, theme::changeColor(rel), theme::BG, buf);
-  } else {
-    snprintf(buf, sizeof(buf), "%s vs %s: waiting for %s data", s.symbol, bench.symbol, bench.symbol);
-    smallText(x, y, theme::LABEL, theme::BG, buf);
+  float values[MAX_AXIS_LABELS], step;
+  int n = axisValues(plot, lo, hi, values, step);
+  int decimals = percentDecimals(step);
+  char texts[MAX_AXIS_LABELS][12];
+  const char* textPtr[MAX_AXIS_LABELS];
+  for (int i = 0; i < n; i++) {
+    if (fabsf(values[i]) < step / 2) snprintf(texts[i], sizeof(texts[i]), "0%%");
+    else snprintf(texts[i], sizeof(texts[i]), "%+.*f%%", decimals, values[i]);
+    textPtr[i] = texts[i];
   }
 
-  // The stock's last value as a tag in the label column
-  int16_t tagY = clampI(mapToPixel(last, ticks.lo, ticks.hi, plot.pBottom, plot.py) - 6, box.y, plot.pBottom - 6);
-  gfx.fillRect(plot.pRight + 3, tagY, LABEL_W - 1, 12, color);
-  snprintf(buf, sizeof(buf), "%+.*f%%", decimals < 1 ? 1 : decimals, last);
-  smallText(plot.pRight + 6, tagY + 2, theme::BG, color, buf);
+  drawGrid(plot, values, n);
+  ui::dashedHLine(plot.x, plot.toY(0), plot.w, c.dim, 4, 4);   // 0 % = each one's reference price
+  if (haveBench) drawSeries(plot, benchFrac, benchPct, benchN, benchColor(), false);   // SPY thin, underneath
+  drawSeries(plot, data.frac, data.price, data.n, color, true);
+  drawAxis(plot, values, n, textPtr, nullptr, 0);
+  drawTimeRow(plot);
 }

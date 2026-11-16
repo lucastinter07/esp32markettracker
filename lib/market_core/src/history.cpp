@@ -64,6 +64,51 @@ bool parseBarsCsv(const char* csv, History& out) {
   return true;
 }
 
+int sessionHalfHours(const PriceSeries& live, const History& h, uint32_t open, uint32_t close, uint32_t* outTimes,
+                     float* outPrices, int capacity) {
+  const uint32_t HALF = 1800;
+  // Live prices only fill half hours that are over (the newest quote is at or past their
+  // end): a half hour still in progress would otherwise be drawn at a time still to come.
+  uint32_t newest = live.size() > 0 ? live.timeAt(live.size() - 1) : 0;
+  int n = 0;
+  for (uint32_t end = open + HALF; end <= close && n < capacity; end += HALF) {
+    bool found = false;
+    float price = 0;
+    for (int k = 0; k < h.barCount && !found; k++) {
+      // Bar end times sit exactly on :00 / :30; allow a little slack anyway.
+      uint32_t t = h.barTime[k];
+      if (t + 60 > end && t < end + 60) {
+        price = h.barClose[k];
+        found = true;
+      }
+    }
+    for (size_t i = 0; i < live.size() && !found && end <= newest; i++) {
+      // The last live price in this half hour: scan it all, the latest one wins.
+      size_t j = live.size() - 1 - i;
+      uint32_t t = live.timeAt(j);
+      if (t > end - HALF && t <= end) {
+        price = live.at(j);
+        found = true;
+      }
+    }
+    if (found) {
+      outTimes[n] = end;
+      outPrices[n] = price;
+      n++;
+    }
+  }
+  // The session in progress: its newest price, after the last full half hour.
+  if (live.size() > 0 && n < capacity) {
+    uint32_t t = live.timeAt(live.size() - 1);
+    if (t > open && t <= close && (n == 0 || t > outTimes[n - 1])) {
+      outTimes[n] = t;
+      outPrices[n] = live.last();
+      n++;
+    }
+  }
+  return n;
+}
+
 bool closeSessionsBack(const History& h, int32_t currentSessionDay, int sessions, float& close) {
   // Count the rows from before the current session; the last of them is 1 session back.
   int before = 0;

@@ -1,6 +1,6 @@
-// The price-alert banner: a strip across the top of the Home, Detail or Sectors screen.
-// Daily move: green (up) or red (down), e.g. "NVDA up 5.24% today, $512.30   TAP TO VIEW".
-// Price target (8C): amber, e.g. "AAPL hit 250.00, now $250.12   TAP TO VIEW".
+// The price-alert banner: a 30 px strip across the top of the Home, Detail or Sectors screen.
+//   Price target (8C), target color:  "<diamond> NVDA HIT 132.50 NOW 132.56          TAP"
+//   Daily move, green / red:          "<up> VRT UP 5.12% TODAY 98.30                 TAP"
 #pragma once
 #include <stdint.h>
 #include "app/price_alerts.h"   // AlertEvent

@@ -342,10 +342,8 @@ void ScreenManager::handleInputAction(const InputEvent& ev, uint32_t nowMs) {
   }
 
   if (mode_ == Mode::Sectors) {
-    if (ev.type == InputType::Back) {
+    if (ev.type == InputType::Back || (ev.type == InputType::Tap && sectorsui::isBackTap(ev.x, ev.y))) {
       showHome(nowMs);
-    } else if (ev.type == InputType::Tap && home::isMenuTap(ev.x, ev.y)) {   // same status bar as Home
-      showSettings(nowMs);
     } else if (sectorsAuto_) {
       sectorsAuto_ = false;   // the user is looking: stay until BACK
       Serial.println("screen: sectors (pinned)");
@@ -355,9 +353,11 @@ void ScreenManager::handleInputAction(const InputEvent& ev, uint32_t nowMs) {
 
   // On a Detail screen (auto or pinned)
   bool backTap = ev.type == InputType::Tap && detail::isBackTap(ev.x, ev.y);
+  bool compareTap = ev.type == InputType::Tap && detail::isCompareTap(ev.x, ev.y);
   int tab = ev.type == InputType::Tap ? detail::tabAt(ev.x, ev.y) : -1;
   if (cfg::TOUCH_DEBUG && ev.type == InputType::Tap) {
-    Serial.printf("tap %d,%d -> %s\n", ev.x, ev.y, backTap ? "back" : (tab >= 0 ? "tab" : "detail area"));
+    Serial.printf("tap %d,%d -> %s\n", ev.x, ev.y,
+                  backTap ? "back" : (compareTap ? "vs spy" : (tab >= 0 ? "page button" : "detail area")));
   }
   if (ev.type == InputType::Back || backTap) {
     showHome(nowMs);
@@ -365,12 +365,18 @@ void ScreenManager::handleInputAction(const InputEvent& ev, uint32_t nowMs) {
     int step = ev.type == InputType::Next ? 1 : -1;
     highlight_ = wrap(ticker_ + step);
     showDetail(highlight_, true, nowMs);   // keeps the current page
-  } else if (ev.type == InputType::Tap && tab < 0 && detail::isChartTap(ev.x, ev.y)) {
-    // A tap on the chart switches between the price chart and "vs SPY" in %.
-    detail::setCompare(ticker_, !detail::compareOn());
+  } else if (compareTap || (ev.type == InputType::Tap && tab < 0 && detail::isChartTap(ev.x, ev.y))) {
+    // VS SPY (or a tap on the chart) switches between the price chart and "vs SPY" in %.
+    // Turned on from the stats page, it opens the 1D chart so the change shows.
+    bool on = !detail::compareOn();
+    detail::setCompare(ticker_, on);
+    if (on && page_ == detail::Page::Stats) {
+      page_ = detail::Page::Day;
+      detail::setPage(ticker_, page_);
+    }
     pinIfAuto();
   } else if (tab >= 0 || ev.type == InputType::Select) {
-    // A tab picks its page; SELECT steps to the next one (1H > 1D > 5D > 1M > STATS > 1H).
+    // A button picks its page; SELECT steps to the next one (1H > 1D > 5D > 1M > STATS > 1H).
     if (tab >= 0) page_ = (detail::Page)tab;
     else page_ = (detail::Page)(((int)page_ + 1) % detail::PAGE_COUNT);
     detail::setPage(ticker_, page_);

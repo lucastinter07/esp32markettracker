@@ -1,6 +1,7 @@
-// The big labelled chart on the detail screen: frame, gridlines, price labels on the
-// right, time/day/date labels underneath, high/low markers and a last-price tag.
-// (The small Home-screen sparklines use ui/chart.)
+// The big chart on the Detail screen (Phase 9, layout D1). No text is ever drawn on the
+// plot itself: price labels sit in a column to its right (with the previous close "P" and
+// price targets "T" as tags there), times / weekdays / dates in a row under it, and a
+// legend row under that.
 #pragma once
 #include <stdint.h>
 #include "symbol_state.h"
@@ -12,14 +13,15 @@ enum class ChartRange : uint8_t {
   Month,     // ~21 daily closes + today's price
 };
 
-// The whole chart region, including the label column on the right and the time row
-// underneath. The plotted area itself sits inside it.
+// The plot area (where the line goes). The label column starts 8 px right of it (64 px
+// wide), the time row 6 px under it, the legend row 23 px under it; the compare chart's
+// legend goes 16 px above it. The caller clears the whole area first.
 struct ChartBox {
   int16_t x, y, w, h;
 };
 
-// marks: prices to show as amber dashed "TARGET" lines (8C price targets), drawn only if
-// they fall inside the price range the chart shows (they don't stretch the axis).
+// marks: price targets (8C), drawn as dashed lines with a "T" tag when they're inside the
+// price range; a target close to the prices widens the range a little to fit.
 void drawRangeChart(const SymbolState& s, const ChartBox& box, ChartRange range, const float* marks = nullptr,
                     int markCount = 0);
 
@@ -29,7 +31,7 @@ void drawRangeChart(const SymbolState& s, const ChartBox& box, ChartRange range,
 bool rangeReference(const SymbolState& s, ChartRange range, float& reference);
 
 // Compare vs SPY (8B): the stock and `bench` (SPY) as % change from each one's reference
-// price for the range, Y axis in %, with a legend "NVDA +2.10%  SPY +0.90%  +1.20% vs SPY".
+// price for the range, % labels, legend row above: "NVDA +1.24%  SPY +0.41%  = +0.83% VS SPY".
 void drawCompareChart(const SymbolState& s, const SymbolState& bench, const ChartBox& box, ChartRange range);
 
 // The legend's figures: each one's change over the range. False if either lacks a reference.

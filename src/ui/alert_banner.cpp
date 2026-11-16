@@ -4,38 +4,31 @@
 #include "config.h"
 #include "data/market_data.h"
 #include "hal/display.h"
-#include "ui/theme.h"
+#include "ui/gfx.h"
+#include "ui/palette.h"
 
 namespace banner {
 
 void draw(const AlertEvent& alert) {
-  DFRobot_GDL& gfx = display();
+  const ui::Palette& p = ui::pal();
   const SymbolState& s = stock(alert.stockIndex);
   bool up = alert.dir == AlertDirection::Up;
-  uint16_t bg = alert.target ? theme::ACCENT : (up ? theme::UP : theme::DOWN);
-  gfx.fillRect(0, 0, cfg::SCREEN_W, HEIGHT, bg);
-
-  // Arrow pointing the way the price moved
-  if (up) gfx.fillTriangle(10, 22, 24, 22, 17, 8, theme::BG);
-  else gfx.fillTriangle(10, 8, 24, 8, 17, 22, theme::BG);
+  uint16_t bg = alert.target ? p.target : (up ? p.up : p.down);
+  display().fillRect(0, 0, cfg::SCREEN_W, HEIGHT, bg);
 
   char text[48];
   if (alert.target) {
-    snprintf(text, sizeof(text), "%s hit %.2f, now $%.2f", s.symbol, alert.targetPrice, s.quote.price);
+    snprintf(text, sizeof(text), G_DIAMOND " %s HIT %.2f NOW %.2f", s.symbol, alert.targetPrice, s.quote.price);
+  } else if (up) {
+    snprintf(text, sizeof(text), G_UP " %s UP %.2f%% TODAY %.2f", s.symbol, fabsf(s.quote.changePct), s.quote.price);
   } else {
-    snprintf(text, sizeof(text), "%s %s %.2f%% today, $%.2f", s.symbol, up ? "up" : "down",
-             fabsf(s.quote.changePct), s.quote.price);
+    snprintf(text, sizeof(text), G_DOWN " %s DOWN %.2f%% TODAY %.2f", s.symbol, fabsf(s.quote.changePct),
+             s.quote.price);
   }
-  gfx.setTextSize(2);
-  gfx.setTextColor(theme::BG, bg);
-  gfx.setCursor(34, 8);
-  gfx.print(text);
-  int16_t hintX = cfg::SCREEN_W - 10 - 11 * 6;
-  if (34 + (int16_t)strlen(text) * 12 + 8 <= hintX) {   // only if a long ticker leaves room
-    gfx.setTextSize(1);
-    gfx.setCursor(hintX, 12);
-    gfx.print("TAP TO VIEW");
-  }
+  char shown[48];
+  ui::fitText(text, 2, cfg::SCREEN_W - 8 - 30 - 8, shown, sizeof(shown));   // leaves room for "TAP"
+  ui::text(8, 7, shown, 2, p.bg, bg);
+  ui::text(cfg::SCREEN_W - 6, 11, "TAP", 1, p.bg, bg, ui::Align::Right);
 }
 
 bool isTap(int16_t x, int16_t y) {

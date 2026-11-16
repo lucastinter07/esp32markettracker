@@ -6,16 +6,21 @@ Import("env")
 import os
 
 KEYS = ["FINNHUB_API_KEY", "TWELVEDATA_API_KEY"]
+PLACEHOLDER = "YOUR_KEY_HERE"   # the value in .env.example: counts as no key
 values = {k: "" for k in KEYS}
 
+# Lines look like KEY=value or KEY = value (quotes around the value are fine; # = comment).
 path = os.path.join(env["PROJECT_DIR"], ".env")
 if os.path.isfile(path):
     with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
-            for k in KEYS:
-                if line.startswith(k + "="):
-                    values[k] = line.split("=", 1)[1].strip().strip('"').strip("'")
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key, value = key.strip(), value.strip().strip('"').strip("'")
+            if key in values and value != PLACEHOLDER:
+                values[key] = value
 
 if not values["FINNHUB_API_KEY"]:
     print("load_env.py: FINNHUB_API_KEY not found in .env; the tracker will show NO API KEY")

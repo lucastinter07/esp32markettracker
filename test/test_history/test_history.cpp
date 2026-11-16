@@ -135,8 +135,72 @@ void test_has_gap() {
   TEST_ASSERT_TRUE(h.hasGap(0, 1000, 300));
 }
 
+// 5D chart, newest session: one point per half hour, like the backfilled days.
+static const uint32_t OPEN = 1800000000u - (1800000000u % 1800);   // on a half hour
+static const uint32_t CLOSE = OPEN + 23400;                         // 6.5 hours later
+static uint32_t outT[32];
+static float outP[32];
+
+void test_half_hours_from_live_quotes() {
+  // The session in progress: a quote every minute from +1 min to +137 min (11:47).
+  PriceSeries live;
+  for (int k = 1; k <= 137; k++) live.push((float)k, OPEN + k * 60);
+  History h;
+  int n = sessionHalfHours(live, h, OPEN, CLOSE, outT, outP, 32);
+  TEST_ASSERT_EQUAL(5, n);   // 10:00, 10:30, 11:00, 11:30, then the newest quote
+  TEST_ASSERT_EQUAL_UINT32(OPEN + 1800, outT[0]);
+  TEST_ASSERT_EQUAL_FLOAT(30.0f, outP[0]);   // the last price in the half hour
+  TEST_ASSERT_EQUAL_FLOAT(120.0f, outP[3]);
+  TEST_ASSERT_EQUAL_UINT32(OPEN + 137 * 60, outT[4]);   // at its real time, not at 12:00
+  TEST_ASSERT_EQUAL_FLOAT(137.0f, outP[4]);
+}
+
+void test_half_hours_prefer_backfilled_bars() {
+  // Live quotes only in the afternoon (the tracker was off in the morning); the backfill
+  // has the whole day. Every half hour comes from the backfill, so there's no hole.
+  PriceSeries live;
+  for (uint32_t t = OPEN + 12600; t <= CLOSE; t += 60) live.push(999.0f, t);
+  History h;
+  h.barTime[0] = OPEN - 86400 + 1800;   // a bar from the day before: ignored
+  h.barClose[0] = 1.0f;
+  for (int k = 1; k <= 13; k++) {
+    h.barTime[k] = OPEN + k * 1800;
+    h.barClose[k] = 500.0f + k;
+  }
+  h.barCount = 14;
+  int n = sessionHalfHours(live, h, OPEN, CLOSE, outT, outP, 32);
+  TEST_ASSERT_EQUAL(13, n);   // the newest quote is at the close: nothing after the last half hour
+  TEST_ASSERT_EQUAL_FLOAT(501.0f, outP[0]);
+  TEST_ASSERT_EQUAL_FLOAT(513.0f, outP[12]);
+  TEST_ASSERT_EQUAL_UINT32(CLOSE, outT[12]);
+}
+
+void test_half_hours_skip_holes_and_respect_early_close() {
+  // A quote at +100 s and one at +20000 s, nothing in between, no backfill.
+  PriceSeries live;
+  live.push(10.0f, OPEN + 100);
+  live.push(20.0f, OPEN + 20000);
+  History h;
+  int n = sessionHalfHours(live, h, OPEN, CLOSE, outT, outP, 32);
+  TEST_ASSERT_EQUAL(2, n);   // 10:00 from the first quote, then the newest quote at its time
+  TEST_ASSERT_EQUAL_UINT32(OPEN + 1800, outT[0]);
+  TEST_ASSERT_EQUAL_UINT32(OPEN + 20000, outT[1]);
+  // A 1 pm close: half hours stop at 13:00 even if bars exist after it.
+  History full;
+  for (int k = 0; k < 13; k++) {
+    full.barTime[k] = OPEN + (k + 1) * 1800;
+    full.barClose[k] = (float)k;
+  }
+  full.barCount = 13;
+  PriceSeries none;
+  TEST_ASSERT_EQUAL(7, sessionHalfHours(none, full, OPEN, OPEN + 12600, outT, outP, 32));
+}
+
 int main() {
   UNITY_BEGIN();
+  RUN_TEST(test_half_hours_from_live_quotes);
+  RUN_TEST(test_half_hours_prefer_backfilled_bars);
+  RUN_TEST(test_half_hours_skip_holes_and_respect_early_close);
   RUN_TEST(test_close_sessions_back);
   RUN_TEST(test_five_minute_bars);
   RUN_TEST(test_fill_gaps_morning_middle_and_end);

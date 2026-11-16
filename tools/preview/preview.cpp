@@ -8,15 +8,23 @@
 #include <Arduino.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
+#include "app/price_alerts.h"
 #include "config.h"
 #include "data/market_data.h"
+#include "data/sectors.h"
 #include "data/settings.h"
+#include "data/targets.h"
 #include "data/watchlist.h"
 #include "hal/display.h"
 #include "net/quote_client.h"
 #include "net/time_sync.h"
 #include "net/wifi_manager.h"
+#include "ui/alert_banner.h"
+#include "ui/clock_screen.h"
+#include "ui/detail_screen.h"
 #include "ui/home_screen.h"
+#include "ui/sector_screen.h"
 #include "ui/splash_screen.h"
 
 // ---------- stand-ins for the firmware modules the screens read ----------
@@ -45,11 +53,44 @@ bool isStale(const SymbolState&, uint32_t, bool) { return false; }
 const char* watchlistIndexLabel(int k) { return k == 0 ? "S&P 500" : "NASDAQ"; }
 const char* quoteFeedProblem() { return nullptr; }
 
+static PriceTarget targets[cfg::NUM_TICKERS][2];
+PriceTarget targetGet(int stockIndex, bool above) { return targets[stockIndex][above ? 0 : 1]; }
+
+static SectorQuote sectorQuotes[NUM_SECTOR_QUOTES];
+const char* sectorSymbol(int i) { return i < cfg::NUM_SECTORS ? cfg::SECTOR_SYMBOLS[i] : cfg::BENCHMARK_SYMBOL; }
+const SectorQuote& sectorQuote(int i) { return sectorQuotes[i]; }
+uint32_t sectorsVersion(int) { return 1; }
+uint32_t sectorsNewestFetch() { return (uint32_t)time(nullptr) - 60; }
+
 static EtTime NOW = {2026, 11, 12, 13, 46};   // Thu Nov 12 2026, 1:46 PM: market open
 bool timeNowET(EtTime& out) { out = NOW; return true; }
 bool marketIsOpenNow() { return marketStatus(NOW).phase == MarketPhase::Open; }
 WifiState wifiState() { return WifiState::Connected; }
 const char* wifiSetupName() { return "MarketTracker-A1B2"; }
+
+// 9:30 and 16:00 Eastern on a date (the PC's TZ is set to Eastern in main()).
+static uint32_t etUnix(int y, int m, int d, int hour, int minute) {
+  struct tm t = {};
+  t.tm_year = y - 1900;
+  t.tm_mon = m - 1;
+  t.tm_mday = d;
+  t.tm_hour = hour;
+  t.tm_min = minute;
+  t.tm_isdst = -1;
+  return (uint32_t)mktime(&t);
+}
+void sessionBoundsForDay(int32_t day, uint32_t& openUnix, uint32_t& closeUnix) {
+  int y, m, d;
+  civilFromDay(day, y, m, d);
+  openUnix = etUnix(y, m, d, 9, 30);
+  closeUnix = etUnix(y, m, d, 16, 0);
+}
+void sessionBounds(uint32_t anyTime, uint32_t& openUnix, uint32_t& closeUnix) {
+  time_t t = anyTime;
+  struct tm et;
+  localtime_r(&t, &et);
+  sessionBoundsForDay(dayNumber(et.tm_year + 1900, et.tm_mon + 1, et.tm_mday), openUnix, closeUnix);
+}
 
 // ---------- sample data ----------
 // A random walk from a to b over n points, the same as the design canvas mockups' path()
@@ -76,15 +117,20 @@ static void fill(SymbolState& s, const char* sym, const char* name, float last, 
   q.change = chg;
   q.prevClose = last - chg;
   q.changePct = chg / q.prevClose * 100.0f;
-  q.open = q.prevClose;
-  q.high = last + fabsf(chg) * 0.4f;
-  q.low = q.prevClose - fabsf(chg) * 0.3f;
+  q.open = q.prevClose + chg * 0.3f;
   s.applyQuote(q, 0, false, 0);
-  uint32_t open = 1794493800;   // 9:30 ET on Nov 12 2026 (unix seconds)
+  uint32_t open = etUnix(NOW.year, NOW.month, NOW.day, 9, 30);
   const int N = 78;             // 9:30 to 3:55, every 5 minutes
   float v[N];
-  walk(seed, N, q.prevClose, last, fabsf(chg) * 0.5f + last * 0.002f, v);
-  for (int i = 0; i < N; i++) s.intraday.push(v[i], open + i * 300);
+  walk(seed, N, q.open, last, fabsf(chg) * 0.5f + last * 0.002f, v);
+  float hi = v[0], lo = v[0];
+  for (int i = 0; i < N; i++) {
+    s.intraday.push(v[i], open + i * 300);
+    if (v[i] > hi) hi = v[i];
+    if (v[i] < lo) lo = v[i];
+  }
+  s.quote.high = hi;
+  s.quote.low = lo;
   if (name) {
     s.profile.valid = true;
     snprintf(s.profile.name, sizeof(s.profile.name), "%s", name);
@@ -99,9 +145,36 @@ static void sampleData() {
   fill(stocks[4], "AAPL", "Apple Inc", 228.10f, -0.71f, 13);
   fill(indexes[0], "SPY", nullptr, 582.10f, 2.37f, 21);
   fill(indexes[1], "QQQ", nullptr, 501.20f, -1.10f, 23);
+  fill(bench, "SPY", nullptr, 582.10f, 2.37f, 21);
+
   int32_t today = dayNumber(NOW.year, NOW.month, NOW.day);
-  stocks[3].earnings.valid = true;   // VRT reports in 3 days
-  stocks[3].earnings.day = today + 3;
+  stocks[3].earnings.valid = true;   // VRT reports tomorrow before the open
+  stocks[3].earnings.day = today + 1;
+  snprintf(stocks[3].earnings.hour, sizeof(stocks[3].earnings.hour), "bmo");
+  stocks[0].earnings.valid = true;   // NVDA a week out, after the close
+  stocks[0].earnings.day = today + 7;
+  snprintf(stocks[0].earnings.hour, sizeof(stocks[0].earnings.hour), "amc");
+
+  Fundamentals& f = stocks[0].fundamentals;   // NVDA: 52W range, P/E 52.4, market cap 3.22T
+  f.valid = true;
+  f.high52 = 152.89f;
+  f.low52 = 86.62f;
+  f.epsTTM = 131.52f / 52.4f;
+  f.sharesM = 3220000.0f / 131.52f;
+  targets[0][0].price = 132.50f;   // NVDA: alert above 132.50 (armed)
+
+  struct { const char* sym; float pct; } SECT[] = {{"XLK", 1.84f}, {"XLF", 0.62f}, {"XLV", 0.18f}, {"XLY", 0.95f},
+                                                  {"XLC", 1.21f}, {"XLI", 0.40f}, {"XLP", -0.48f}, {"XLE", -1.62f},
+                                                  {"XLU", -0.91f}, {"XLRE", -0.33f}, {"XLB", -0.05f}};
+  for (int i = 0; i < NUM_SECTOR_QUOTES; i++) {
+    SectorQuote& q = sectorQuotes[i];
+    q.valid = true;
+    q.price = 100.0f + i * 7.3f;
+    q.changePct = i == BENCHMARK_INDEX ? 0.41f : 0;
+    for (auto& s : SECT)
+      if (i < cfg::NUM_SECTORS && strcmp(s.sym, cfg::SECTOR_SYMBOLS[i]) == 0) q.changePct = s.pct;
+    q.change = q.price * q.changePct / 100.0f;
+  }
 }
 
 // ---------- output ----------
@@ -139,6 +212,8 @@ static void save(const char* dir, const char* name) {
 int main(int argc, char** argv) {
   const char* dir = argc > 1 ? argv[1] : ".";
   if (argc > 2) currentSettings.theme = (uint8_t)atoi(argv[2]);
+  _putenv("TZ=EST5EDT");   // chart times are Eastern, like the device's TZ setting
+  _tzset();
   sampleData();
 
   splash::drawFull();
@@ -152,5 +227,74 @@ int main(int argc, char** argv) {
 
   home::drawFull(0);
   save(dir, "02_home");
+
+  detail::drawFull(0, true, detail::Page::Day);
+  save(dir, "03_detail_1d");
+  detail::setCompare(0, true);
+  save(dir, "04_detail_vs_spy");
+  detail::setCompare(0, false);
+  detail::setPage(0, detail::Page::Stats);
+  save(dir, "05_detail_stats");
+
+  // 5D: 4 earlier sessions of backfilled 30-minute bars, plus today's live quotes once a
+  // minute with an hour missing (11:00 to 12:00, the tracker was off).
+  {
+    SymbolState& s = stocks[0];
+    History& h = s.history;
+    h.valid = true;
+    h.barCount = 0;
+    int32_t today = dayNumber(NOW.year, NOW.month, NOW.day);
+    const int32_t back[] = {6, 3, 2, 1};   // Fri, Mon, Tue, Wed before Thu Nov 12
+    float level = 124.0f;
+    for (int d = 0; d < 4; d++) {
+      uint32_t open, close;
+      sessionBoundsForDay(today - back[d], open, close);
+      float v[13];
+      walk(31 + d, 13, level, level + 1.5f, 1.4f, v);
+      for (int k = 0; k < 13; k++) {
+        h.barTime[h.barCount] = open + (k + 1) * 1800;
+        h.barClose[h.barCount++] = v[k];
+      }
+      level += 1.4f;
+    }
+    PriceSeries saved = s.intraday;
+    s.intraday.clear();
+    uint32_t open, close;
+    sessionBoundsForDay(today, open, close);
+    float v[256];
+    walk(3, 256, 129.9f, 131.52f, 2.0f, v);
+    for (int k = 0; k < 256; k++) {
+      uint32_t t = open + 60 + k * 60;
+      if (t >= open + 5400 && t < open + 9000) continue;   // the hole
+      s.intraday.push(v[k], t);
+    }
+    detail::drawFull(0, true, detail::Page::FiveDay);
+    save(dir, "05b_detail_5d");
+    s.intraday = saved;
+    h.barCount = 0;
+  }
+
+  sectorsui::drawFull();
+  save(dir, "06_sectors");
+  currentSettings.sectorMap = SECTOR_MAP_GRID;
+  sectorsui::drawFull();
+  save(dir, "06b_sectors_grid");
+  currentSettings.sectorMap = SECTOR_MAP_SIZED;
+
+  NOW = {2026, 11, 12, 21, 47};   // Thu 9:47 PM: closed, the overnight clock's time
+  clockui::drawFull();
+  save(dir, "07_clock");
+  NOW = {2026, 11, 12, 13, 46};
+
+  home::drawFull(0);
+  AlertEvent target = {0, AlertDirection::Up, true, 132.50f};
+  banner::draw(target);
+  save(dir, "08_banner_target");
+  AlertEvent move = {3, AlertDirection::Up, false, 0};
+  banner::draw(move);
+  save(dir, "08b_banner_up");
+  AlertEvent drop = {1, AlertDirection::Down, false, 0};
+  banner::draw(drop);
+  save(dir, "08c_banner_down");
   return 0;
 }
