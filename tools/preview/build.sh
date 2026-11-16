@@ -12,7 +12,9 @@ g++ -std=gnu++14 -O1 -w \
   src/ui/gfx.cpp src/ui/font6x8.cpp src/ui/palette.cpp src/ui/status_bar.cpp \
   src/ui/home_screen.cpp src/ui/splash_screen.cpp src/ui/detail_screen.cpp src/ui/price_chart.cpp \
   src/ui/sector_screen.cpp src/ui/clock_screen.cpp src/ui/alert_banner.cpp \
-  lib/market_core/src/chart_math.cpp lib/market_core/src/treemap.cpp \
+  src/ui/settings_screen.cpp src/ui/watchlist_screen.cpp src/ui/diag_screen.cpp src/ui/setup_screen.cpp \
+  lib/market_core/src/chart_math.cpp lib/market_core/src/treemap.cpp lib/market_core/src/symbol_text.cpp \
+  lib/market_core/src/price_targets.cpp \
   lib/market_core/src/market_calendar.cpp lib/market_core/src/price_series.cpp \
   lib/market_core/src/symbol_state.cpp lib/market_core/src/earnings.cpp lib/market_core/src/history.cpp \
   -o "$OUT/preview.exe"

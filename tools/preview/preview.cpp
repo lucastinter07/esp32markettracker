@@ -20,12 +20,19 @@
 #include "net/quote_client.h"
 #include "net/time_sync.h"
 #include "net/wifi_manager.h"
+#include "app/health.h"
+#include "storage/history.h"
 #include "ui/alert_banner.h"
 #include "ui/clock_screen.h"
 #include "ui/detail_screen.h"
+#include "ui/diag_screen.h"
 #include "ui/home_screen.h"
 #include "ui/sector_screen.h"
+#include "ui/settings_screen.h"
+#include "ui/setup_screen.h"
 #include "ui/splash_screen.h"
+#include "ui/watchlist_screen.h"
+#include <WiFi.h>
 
 // ---------- stand-ins for the firmware modules the screens read ----------
 PreviewSerial Serial;
@@ -43,6 +50,7 @@ void displayPushPixels(int16_t x, int16_t y, int16_t w, int16_t h, const uint8_t
 
 static Settings currentSettings;
 const Settings& settings() { return currentSettings; }
+Settings& settingsForEdit() { return currentSettings; }
 
 static SymbolState stocks[cfg::NUM_TICKERS], indexes[cfg::NUM_INDEXES], bench;
 SymbolState& stock(int i) { return stocks[i]; }
@@ -55,6 +63,69 @@ const char* quoteFeedProblem() { return nullptr; }
 
 static PriceTarget targets[cfg::NUM_TICKERS][2];
 PriceTarget targetGet(int stockIndex, bool above) { return targets[stockIndex][above ? 0 : 1]; }
+void targetPut(int stockIndex, bool above, float price) { targets[stockIndex][above ? 0 : 1] = {price, 0}; }
+
+// Settings, watchlist and the ticker check (Settings / watchlist editor screens)
+Settings& settingsForEdit();
+void settingsSave() {}
+const char* cycleSpeedName(uint8_t speed) { return speed == CYCLE_FAST ? "FAST" : (speed == CYCLE_SLOW ? "SLOW" : "NORMAL"); }
+const char* watchlistSymbol(int i) { return symbolByIndex(i).symbol; }
+bool watchlistIsDefault() { return true; }
+int watchlistFind(const char* symbol) {
+  for (int i = 0; i < NUM_SYMBOLS; i++)
+    if (strcmp(symbolByIndex(i).symbol, symbol) == 0) return i;
+  return -1;
+}
+void watchlistSetStock(int, const char*) {}
+uint8_t watchlistIndexChoice(int k) { return (uint8_t)k; }
+void watchlistSetIndexChoice(int, uint8_t) {}
+void watchlistReset() {}
+void storageSaveProfiles() {}
+static char lookupSymbol[SYMBOL_MAX_LEN + 1];
+void quoteClientLookup(const char* symbol) { snprintf(lookupSymbol, sizeof(lookupSymbol), "%s", symbol); }
+bool quoteClientLookupResult(SymbolLookup& out) {   // answers a pending check once, as if Finnhub found it
+  if (!lookupSymbol[0]) return false;
+  memset(&out, 0, sizeof(out));
+  snprintf(out.symbol, sizeof(out.symbol), "%s", lookupSymbol);
+  out.status = LookupStatus::Found;
+  out.quote.price = 172.50f;
+  out.quote.change = 2.10f;
+  out.quote.changePct = 1.23f;
+  out.profile.valid = true;
+  snprintf(out.profile.name, sizeof(out.profile.name), "Broadcom Inc");
+  lookupSymbol[0] = '\0';
+  return true;
+}
+
+// Diagnostics and Wi-Fi setup
+PreviewWiFi WiFi;
+const char* healthResetReason() { return "power on"; }
+void healthMemory(MemoryInfo& m) { m = {148 * 1024, 121 * 1024, 96 * 1024, 7900 * 1024}; }
+FeedStatus quoteFeedStatus() { return FeedStatus::Live; }
+void quoteClientStats(FeedStats& f) {
+  memset(&f, 0, sizeof(f));
+  f.lastQuoteOkMs = 590000;
+  f.lastTdOkMs = 300000;
+  f.finnhubLastMinute = 31;
+  f.finnhubTotal = 1234;
+  f.tdToday = 42;
+  f.historyDue = 1 << 3;   // VRT's history still downloading
+}
+bool timeLastSync(uint32_t& msAgo) { msAgo = 120000; return true; }
+void storageInfo(StorageInfo& s) {
+  static const char* const NAMES[STORAGE_FILES] = {"chart", "stats", "names", "hist", "earn", "sect"};
+  static const uint32_t SIZES[STORAGE_FILES] = {14200, 640, 2300, 9800, 520, 360};
+  s.mounted = true;
+  s.usedBytes = 220 * 1024;
+  s.totalBytes = 1408 * 1024;
+  for (int i = 0; i < STORAGE_FILES; i++) {
+    s.names[i] = NAMES[i];
+    s.sizes[i] = SIZES[i];
+  }
+}
+const char* wifiSetupPassword() { return "48213907"; }
+const char* wifiSetupAddress() { return "192.168.4.1"; }
+const char* wifiSetupError() { return ""; }
 
 static SectorQuote sectorQuotes[NUM_SECTOR_QUOTES];
 const char* sectorSymbol(int i) { return i < cfg::NUM_SECTORS ? cfg::SECTOR_SYMBOLS[i] : cfg::BENCHMARK_SYMBOL; }
@@ -161,6 +232,7 @@ static void sampleData() {
   f.low52 = 86.62f;
   f.epsTTM = 131.52f / 52.4f;
   f.sharesM = 3220000.0f / 131.52f;
+  f.fetchedDay = today - 2;   // downloaded 2 days ago
   targets[0][0].price = 132.50f;   // NVDA: alert above 132.50 (armed)
 
   struct { const char* sym; float pct; } SECT[] = {{"XLK", 1.84f}, {"XLF", 0.62f}, {"XLV", 0.18f}, {"XLY", 0.95f},
@@ -296,5 +368,45 @@ int main(int argc, char** argv) {
   AlertEvent drop = {1, AlertDirection::Down, false, 0};
   banner::draw(drop);
   save(dir, "08c_banner_down");
+
+  // Settings: page 1 with THEME highlighted, page 2
+  settingsui::drawFull(5);
+  save(dir, "09_settings_p1");
+  settingsui::drawFull(8);
+  save(dir, "09b_settings_p2");
+
+  // Watchlist editor, driven by taps like a finger would
+  auto tap = [](int16_t x, int16_t y) {
+    InputEvent ev = {InputType::Tap, x, y};
+    watchui::handle(ev, 0);
+  };
+  auto keyTap = [&](int k) { tap(7 + (k % 10) * 47 + 21, 92 + (k / 10) * 50 + 22); };
+  watchui::open();
+  save(dir, "10_watchlist");
+  tap(240, 30 + 10);        // NVDA's row -> its slot screen
+  save(dir, "10b_watchlist_slot");
+  tap(240, 30 + 31 + 10);   // Alert above -> keypad (shows the armed 132.50)
+  save(dir, "10c_keypad");
+  InputEvent back = {InputType::Back, 0, 0};
+  watchui::handle(back, 0);   // back to the slot screen
+  tap(240, 30 + 10);          // Change ticker -> keyboard
+  for (char c : {'A', 'V', 'G', 'O'}) keyTap(c - 'A');
+  save(dir, "10d_keyboard");
+  tap(8 + 2 * 158 + 74, 250 + 22);   // OK -> checking
+  save(dir, "10e_checking");
+  watchui::update(0);                // the answer arrives -> confirm
+  save(dir, "10f_confirm");
+
+  // Diagnostics: the three tabs
+  diagui::open(600000);
+  save(dir, "11_diag_device");
+  InputEvent next = {InputType::Next, 0, 0};
+  diagui::handle(next, 600000);
+  save(dir, "11b_diag_network");
+  diagui::handle(next, 600000);
+  save(dir, "11c_diag_data");
+
+  wifisetup::drawFull();
+  save(dir, "12_wifi_setup");
   return 0;
 }

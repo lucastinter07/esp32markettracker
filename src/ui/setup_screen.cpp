@@ -1,48 +1,47 @@
 #include "ui/setup_screen.h"
 #include <Arduino.h>
+#include <ctype.h>
 #include <string.h>
+#include "config.h"
 #include "hal/display.h"
 #include "net/wifi_manager.h"
-#include "ui/theme.h"
+#include "ui/gfx.h"
+#include "ui/palette.h"
 
 namespace wifisetup {
 
-static void text(int16_t x, int16_t y, uint8_t size, uint16_t color, const char* s) {
-  DFRobot_GDL& gfx = display();
-  gfx.setTextSize(size);
-  gfx.setTextColor(color, theme::BG);
-  gfx.setCursor(x, y);
-  gfx.print(s);
-}
-
+// Layout A: header bar, three numbered steps, then what the buttons do. The hotspot name
+// and password are shown exactly as the phone will show them (the name has lower case).
 void drawFull() {
-  DFRobot_GDL& gfx = display();
-  gfx.fillScreen(theme::BG);
+  const ui::Palette& p = ui::pal();
+  display().fillScreen(p.bg);
+  ui::headerBar("WI-FI SETUP", nullptr);
   char buf[48];
 
-  text(20, 16, 3, theme::TEXT, "Wi-Fi setup");
+  ui::text(16, 38, "1  ON YOUR PHONE, JOIN THIS WI-FI:", 2, p.dim, p.bg);
+  ui::text(44, 60, wifiSetupName(), 3, p.label, p.bg);
 
-  text(20, 62, 2, theme::LABEL, "1. On your phone, join:");
-  text(44, 86, 3, theme::ACCENT, wifiSetupName());
+  ui::text(16, 98, "2  PASSWORD:", 2, p.dim, p.bg);
+  ui::text(180, 94, wifiSetupPassword(), 3, p.text, p.bg);
 
-  text(20, 124, 2, theme::LABEL, "2. Password:");
-  text(180, 120, 3, theme::TEXT, wifiSetupPassword());
-
-  text(20, 160, 2, theme::LABEL, "3. The setup page opens by itself.");
-  snprintf(buf, sizeof(buf), "   If not, visit %s", wifiSetupAddress());
-  text(20, 184, 2, theme::LABEL, buf);
+  ui::text(16, 134, "3  THE SETUP PAGE OPENS BY ITSELF.", 2, p.dim, p.bg);
+  snprintf(buf, sizeof(buf), "   IF NOT, VISIT %s", wifiSetupAddress());
+  ui::text(16, 158, buf, 2, p.dim, p.bg);
 
   const char* error = wifiSetupError();
   if (error[0] != '\0') {
-    // Size 2 fits 36 characters across; longer messages drop to the small font.
-    text(20, 218, strlen(error) > 36 ? 1 : 2, theme::DOWN, error);
+    char up[96];
+    snprintf(up, sizeof(up), "%s", error);
+    for (char* c = up; *c; c++) *c = (char)toupper((unsigned char)*c);
+    // Size 2 fits 38 characters across; longer messages drop to the small font.
+    ui::text(16, 200, up, strlen(up) > 38 ? 1 : 2, p.down, p.bg);
   }
 
-  gfx.drawFastHLine(20, 248, 440, theme::PANEL);
-  text(20, 262, 2, theme::TEXT, "SELECT");
-  text(116, 262, 2, theme::LABEL, "retry saved network");
-  text(20, 288, 2, theme::TEXT, "BACK");
-  text(116, 288, 2, theme::LABEL, "continue offline");
+  display().drawFastHLine(0, 244, cfg::SCREEN_W, p.line);
+  ui::text(16, 258, "SELECT", 2, p.label, p.bg);
+  ui::text(116, 258, "RETRY SAVED NETWORK", 2, p.dim, p.bg);
+  ui::text(16, 286, "BACK", 2, p.label, p.bg);
+  ui::text(116, 286, "CONTINUE OFFLINE", 2, p.dim, p.bg);
 }
 
 }  // namespace wifisetup

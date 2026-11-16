@@ -112,6 +112,36 @@ void headerBar(const char* left, const char* right, int16_t y) {
   if (right && right[0]) text(cfg::SCREEN_W - 6, ty, right, 2, p.ink, p.bar, Align::Right);
 }
 
+void listRow(int16_t y, const char* label, const char* value, uint16_t valueColor, bool highlighted, bool leaders) {
+  DFRobot_GDL& gfx = display();
+  const Palette& p = pal();
+  uint16_t bg = highlighted ? p.hi : p.bg;
+  gfx.fillRect(0, y, cfg::SCREEN_W, LISTROW_H, bg);
+  if (highlighted) gfx.fillRect(0, y, 3, LISTROW_H, p.stripe);
+  int16_t x = text(8, y + 7, label, 2, p.text, bg);
+  int16_t right = cfg::SCREEN_W - 8 - textWidth(value, 2);
+  int dots = (right - 8 - (x + 6)) / CHAR_W;
+  if (leaders && dots > 0) {
+    char row[80];
+    if (dots > (int)sizeof(row) - 1) dots = sizeof(row) - 1;
+    memset(row, '.', dots);
+    row[dots] = '\0';
+    text(x + 6, y + 11, row, 1, mix(p.line, p.dim, 80), bg);
+  }
+  text(cfg::SCREEN_W - 8, y + 7, value, 2, valueColor, bg, Align::Right);
+}
+
+void button(int16_t x, int16_t y, int16_t w, int16_t h, const char* label, uint8_t size, uint16_t color, bool filled,
+            bool highlighted) {
+  DFRobot_GDL& gfx = display();
+  const Palette& p = pal();
+  uint16_t bg = filled ? p.accent : (highlighted ? p.hi : p.bg);
+  gfx.fillRect(x, y, w, h, bg);
+  gfx.drawRect(x, y, w, h, filled ? p.accent : color);
+  if (filled && highlighted) gfx.drawRect(x + 3, y + 3, w - 6, h - 6, p.accentInk);   // the cursor is on it
+  text(x + w / 2, y + (h - CHAR_H * size) / 2, label, size, filled ? p.accentInk : color, bg, Align::Center);
+}
+
 void dashedHLine(int16_t x, int16_t y, int16_t w, uint16_t color, int16_t dash, int16_t gap) {
   DFRobot_GDL& gfx = display();
   for (int16_t dx = 0; dx < w; dx += dash + gap) {

@@ -4,19 +4,18 @@
 #include "config.h"
 #include "data/settings.h"
 #include "hal/display.h"
+#include "ui/gfx.h"
 #include "ui/palette.h"
-#include "ui/theme.h"
 
 namespace settingsui {
 
-static const int16_t HEADER_H = 40;
-static const int16_t BACK_W = 120;
-static const int16_t ROW_Y0 = 44, ROW_H = 29;   // 8 rows per page: 44 .. 276 (restyled in 9E)
-static const int ROWS_PER_PAGE = 8;
-static const int16_t PAGER_Y = 282, PAGER_H = 36;   // page buttons along the bottom
-static const int16_t PAGER_W = 150;
+using ui::Align;
 
-// Page 1 = what the screen shows, page 2 = alerts, sound and system (reorganized in 8A).
+// Layout (480 x 320), as on the design canvas: 8 rows per page, then the pager.
+static const int ROWS_PER_PAGE = 8;
+static const int16_t RULE_Y = 284, PAGER_Y = 296;
+
+// Page 1 = what the screen shows, page 2 = alerts, sound and system.
 enum Row {
   // page 1
   WATCHLIST, AUTO_CYCLE, CYCLE_SPEED, SECTOR_MAP, OVERNIGHT_CLOCK, THEME, BRIGHTNESS, NIGHT_DIM,
@@ -25,9 +24,9 @@ enum Row {
   ROW_COUNT
 };
 static const char* const LABELS[ROW_COUNT] = {
-    "Watchlist",    "Auto cycle",   "Cycle speed",      "Sector map",  "Overnight clock", "Theme",
-    "Brightness",   "Night dimming", "Price alerts",    "Click sounds", "Open/close chime", "Wi-Fi setup",
-    "Diagnostics",  "Re-download data", "Restart device",
+    "WATCHLIST",    "AUTO CYCLE",   "CYCLE SPEED", "SECTOR MAP", "OVERNIGHT CLOCK", "THEME",
+    "BRIGHTNESS",   "NIGHT DIMMING", "PRICE ALERTS", "CLICK SOUNDS", "CHIME",       "WI-FI",
+    "DIAGNOSTICS",  "RE-DOWNLOAD DATA", "RESTART",
 };
 static const int PAGE_COUNT = (ROW_COUNT + ROWS_PER_PAGE - 1) / ROWS_PER_PAGE;
 
@@ -55,80 +54,77 @@ static int indexOf(const uint8_t* steps, int count, uint8_t value) {
   return -1;
 }
 
+// "10P", "7A", "12A"
+static void hourText(char* buf, size_t size, int hour) {
+  int h12 = hour % 12 == 0 ? 12 : hour % 12;
+  snprintf(buf, size, "%d%c", h12, hour < 12 ? 'A' : 'P');
+}
+
 static void valueText(int row, char* buf, size_t size) {
   const Settings& st = settings();
-  bool confirming = row == confirmRow;
+  if (row == confirmRow) {
+    snprintf(buf, size, "TAP AGAIN");
+    return;
+  }
+  char a[6], b[6];
   switch (row) {
     case WATCHLIST:   snprintf(buf, size, "EDIT >"); break;
     case AUTO_CYCLE:  snprintf(buf, size, st.autoCycle ? "ON" : "OFF"); break;
     case CYCLE_SPEED: snprintf(buf, size, "%s", cycleSpeedName(st.cycleSpeed)); break;
-    case ALERTS:
-      if (st.alertPercent == 0) snprintf(buf, size, "OFF");
-      else snprintf(buf, size, "+/-%d%%", st.alertPercent);
-      break;
-    case CLICKS:      snprintf(buf, size, st.clickSounds ? "ON" : "OFF"); break;
-    case CHIME:       snprintf(buf, size, st.chime ? "ON" : "OFF"); break;
-    case BRIGHTNESS:  snprintf(buf, size, "%d%%", st.brightness); break;
     case SECTOR_MAP:  snprintf(buf, size, st.sectorMap == SECTOR_MAP_GRID ? "GRID" : "SIZED"); break;
     case OVERNIGHT_CLOCK: snprintf(buf, size, st.overnightClock ? "ON" : "OFF"); break;
     case THEME:       snprintf(buf, size, "%s", ui::palette(st.theme).name); break;
-    case NIGHT_DIM:   // one row for on/off and the hours: OFF or e.g. "22:00-07:00"
-      if (st.nightDim) snprintf(buf, size, "%02d:00-%02d:00", st.nightStart, st.nightEnd);
-      else snprintf(buf, size, "OFF");
+    case BRIGHTNESS:  snprintf(buf, size, "%d%%", st.brightness); break;
+    case NIGHT_DIM:   // one row for on/off and the hours: OFF or e.g. "10P-7A"
+      if (!st.nightDim) {
+        snprintf(buf, size, "OFF");
+      } else {
+        hourText(a, sizeof(a), st.nightStart);
+        hourText(b, sizeof(b), st.nightEnd);
+        snprintf(buf, size, "%s-%s", a, b);
+      }
       break;
-    case WIFI:        snprintf(buf, size, confirming ? "Tap again" : "Start"); break;
-    case DIAGNOSTICS: snprintf(buf, size, "VIEW >"); break;
-    case REFRESH:     snprintf(buf, size, confirming ? "Tap again" : "~1 MB"); break;
-    case RESTART:     snprintf(buf, size, confirming ? "Tap again" : "Restart"); break;
+    case ALERTS:
+      if (st.alertPercent == 0) snprintf(buf, size, "OFF");
+      else snprintf(buf, size, G_PLUSMINUS "%d%%", st.alertPercent);
+      break;
+    case CLICKS:      snprintf(buf, size, st.clickSounds ? "ON" : "OFF"); break;
+    case CHIME:       snprintf(buf, size, st.chime ? "ON" : "OFF"); break;
+    case WIFI:        snprintf(buf, size, "SETUP >"); break;
+    case DIAGNOSTICS: snprintf(buf, size, ">"); break;
+    case REFRESH:     snprintf(buf, size, "~1 MB >"); break;   // cellular data it will use
+    case RESTART:     snprintf(buf, size, ">"); break;
     default:          buf[0] = '\0';
   }
 }
 
 static void drawRow(int row, bool highlighted) {
-  DFRobot_GDL& gfx = display();
-  int16_t y = ROW_Y0 + (row % ROWS_PER_PAGE) * ROW_H;
-  uint16_t bg = highlighted ? theme::HIGHLIGHT : theme::BG;
-  gfx.fillRect(0, y, cfg::SCREEN_W, ROW_H - 2, bg);
-  gfx.setTextSize(2);
-  int16_t ty = y + (ROW_H - 2 - 16) / 2;
-  gfx.setTextColor(theme::TEXT, bg);
-  gfx.setCursor(16, ty);
-  gfx.print(LABELS[row]);
-  char value[24];
+  char label[24], value[24];
+  snprintf(label, sizeof(label), "%02d %s", row + 1, LABELS[row]);
   valueText(row, value, sizeof(value));
-  gfx.setTextColor(row == confirmRow ? theme::DOWN : theme::ACCENT, bg);
-  gfx.setCursor(cfg::SCREEN_W - 16 - (int16_t)strlen(value) * 12, ty);   // right-aligned
-  gfx.print(value);
+  const ui::Palette& p = ui::pal();
+  int16_t y = ui::LISTROW_Y0 + (row % ROWS_PER_PAGE) * ui::LISTROW_PITCH;
+  ui::listRow(y, label, value, row == confirmRow ? p.down : p.label, highlighted);
   strcpy(drawnValue[row], value);
 }
 
 static void drawPager(int page) {
-  DFRobot_GDL& gfx = display();
-  gfx.fillRect(0, PAGER_Y, cfg::SCREEN_W, PAGER_H, theme::BG);
-  gfx.setTextSize(2);
-  int16_t ty = PAGER_Y + (PAGER_H - 16) / 2;
-  if (page > 0) {
-    gfx.fillRect(0, PAGER_Y, PAGER_W, PAGER_H, theme::PANEL);
-    gfx.setTextColor(theme::TEXT, theme::PANEL);
-    gfx.setCursor(14, ty);
-    gfx.print("< PAGE");
-  }
-  if (page < PAGE_COUNT - 1) {
-    gfx.fillRect(cfg::SCREEN_W - PAGER_W, PAGER_Y, PAGER_W, PAGER_H, theme::PANEL);
-    gfx.setTextColor(theme::TEXT, theme::PANEL);
-    gfx.setCursor(cfg::SCREEN_W - PAGER_W + 14, ty);
-    gfx.print("PAGE >");
-  }
+  const ui::Palette& p = ui::pal();
+  display().fillRect(0, RULE_Y, cfg::SCREEN_W, cfg::SCREEN_H - RULE_Y, p.bg);
+  display().drawFastHLine(0, RULE_Y, cfg::SCREEN_W, p.line);
+  ui::text(8, PAGER_Y, "< PAGE", 2, page > 0 ? p.label : p.dim, p.bg);
   char label[12];
   snprintf(label, sizeof(label), "%d / %d", page + 1, PAGE_COUNT);
-  gfx.setTextColor(theme::LABEL, theme::BG);
-  gfx.setCursor((cfg::SCREEN_W - (int16_t)strlen(label) * 12) / 2, ty);
-  gfx.print(label);
+  ui::text(cfg::SCREEN_W / 2, PAGER_Y, label, 2, p.dim, p.bg, Align::Center);
+  ui::text(cfg::SCREEN_W - 8, PAGER_Y, "PAGE >", 2, page < PAGE_COUNT - 1 ? p.label : p.dim, p.bg, Align::Right);
 }
 
-// The rows of one page and the page buttons (the header stays).
+// The rows of one page, the page number in the header and the pager.
 static void drawPage(int page, int highlight) {
-  display().fillRect(0, HEADER_H, cfg::SCREEN_W, PAGER_Y - HEADER_H, theme::BG);
+  char right[8];
+  snprintf(right, sizeof(right), "%d/%d", page + 1, PAGE_COUNT);
+  ui::headerBar("< BACK  SETTINGS", right);
+  display().fillRect(0, ui::BAR_H, cfg::SCREEN_W, RULE_Y - ui::BAR_H, ui::pal().bg);
   int first = page * ROWS_PER_PAGE;
   for (int i = first; i < first + ROWS_PER_PAGE && i < ROW_COUNT; i++) drawRow(i, i == highlight);
   drawPager(page);
@@ -161,18 +157,7 @@ int pageCount() {
 }
 
 void drawFull(int highlight) {
-  DFRobot_GDL& gfx = display();
-  gfx.fillScreen(theme::BG);
-  gfx.fillRect(0, 0, cfg::SCREEN_W, HEADER_H, theme::PANEL);
-  gfx.fillRect(0, 0, BACK_W, HEADER_H, theme::HIGHLIGHT);
-  gfx.setTextSize(2);
-  gfx.setTextColor(theme::TEXT, theme::HIGHLIGHT);
-  gfx.setCursor(12, 12);
-  gfx.print("< BACK");
-  gfx.setTextSize(3);
-  gfx.setTextColor(theme::TEXT, theme::PANEL);
-  gfx.setCursor(BACK_W + 20, 9);
-  gfx.print("SETTINGS");
+  display().fillScreen(ui::pal().bg);
   confirmRow = -1;
   drawPage(pageOf(highlight), highlight);
 }
@@ -219,7 +204,11 @@ Action activate(int row, uint32_t nowMs) {
     case CHIME:       st.chime = !st.chime; break;
     case SECTOR_MAP:  st.sectorMap = st.sectorMap == SECTOR_MAP_GRID ? SECTOR_MAP_SIZED : SECTOR_MAP_GRID; break;
     case OVERNIGHT_CLOCK: st.overnightClock = !st.overnightClock; break;
-    case THEME:       st.theme = (uint8_t)((st.theme + 1) % ui::THEME_COUNT); break;   // seen on the next Home
+    case THEME:
+      st.theme = (uint8_t)((st.theme + 1) % ui::THEME_COUNT);
+      settingsSave();
+      drawFull(row);   // the whole screen changes color
+      return Action::None;
     case ALERTS:
       i = indexOf(ALERT_STEPS, sizeof(ALERT_STEPS), st.alertPercent);
       st.alertPercent = ALERT_STEPS[(i + 1) % sizeof(ALERT_STEPS)];
@@ -257,20 +246,19 @@ Action activate(int row, uint32_t nowMs) {
 
 int rowAt(int16_t x, int16_t y) {
   (void)x;
-  if (y < ROW_Y0 || y >= PAGER_Y - 4) return -1;
-  int k = (y - ROW_Y0) / ROW_H;
-  if (k >= ROWS_PER_PAGE) return -1;
+  if (y < ui::LISTROW_Y0 || y >= ui::LISTROW_Y0 + ROWS_PER_PAGE * ui::LISTROW_PITCH) return -1;
+  int k = (y - ui::LISTROW_Y0) / ui::LISTROW_PITCH;
   int row = currentPage() * ROWS_PER_PAGE + k;
   return row < ROW_COUNT ? row : -1;
 }
 
 int pageTap(int16_t x, int16_t y) {
-  if (y < PAGER_Y - 4) return 0;
+  if (y < RULE_Y - 4) return 0;
   return x < cfg::SCREEN_W / 2 ? -1 : 1;
 }
 
 bool isBackTap(int16_t x, int16_t y) {
-  return x < BACK_W + 40 && y < HEADER_H + 4;
+  return x < 100 && y < ui::BAR_H + 12;
 }
 
 }  // namespace settingsui

@@ -19,6 +19,7 @@
 #define G_MENU    "\xF0"   // three bars (opens Settings)
 #define G_DOT     "\xFA"   // middle dot, a separator
 #define G_SQUARE  "\xFE"   // small filled square (chart legends)
+#define G_PLUSMINUS "\xF1" // plus-minus sign
 
 namespace ui {
 
@@ -41,6 +42,19 @@ void fitText(const char* s, uint8_t size, int16_t maxW, char* out, size_t outSiz
 // A header bar across the screen (y .. y+BAR_H) in the theme's bar color, with size-2 text
 // in its ink color: `left` from x 6, `right` (optional) right-aligned at x 474.
 void headerBar(const char* left, const char* right, int16_t y = 0);
+
+// List rows (Settings, watchlist): 30 px tall, every 31 px from y 30 (8 fit above the
+// pager rule at y 284). Label at x 8, value right-aligned at x 472, dot leaders between
+// them if `leaders`; a highlighted row gets the theme's highlight fill and edge stripe.
+constexpr int16_t LISTROW_Y0 = 30, LISTROW_PITCH = 31, LISTROW_H = 30;
+void listRow(int16_t y, const char* label, const char* value, uint16_t valueColor, bool highlighted,
+             bool leaders = true);
+
+// A framed button (keypads, keyboard, OK / CANCEL): 1 px frame and text in `color`.
+// filled = the main action (accent fill, accentInk text); highlighted = the button the
+// PREV / NEXT keys are on (highlight fill). Text is centered.
+void button(int16_t x, int16_t y, int16_t w, int16_t h, const char* label, uint8_t size, uint16_t color,
+            bool filled, bool highlighted);
 
 void dashedHLine(int16_t x, int16_t y, int16_t w, uint16_t color, int16_t dash = 4, int16_t gap = 4);
 void thickLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color);   // 2 px tall
