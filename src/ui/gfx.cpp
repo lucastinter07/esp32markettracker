@@ -149,6 +149,13 @@ void dashedHLine(int16_t x, int16_t y, int16_t w, uint16_t color, int16_t dash, 
   }
 }
 
+void dashedVLine(int16_t x, int16_t y, int16_t h, uint16_t color, int16_t dash, int16_t gap) {
+  DFRobot_GDL& gfx = display();
+  for (int16_t dy = 0; dy < h; dy += dash + gap) {
+    gfx.drawFastVLine(x, y + dy, (h - dy) < dash ? (h - dy) : dash, color);
+  }
+}
+
 void thickLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color) {
   DFRobot_GDL& gfx = display();
   gfx.drawLine(x0, y0, x1, y1, color);

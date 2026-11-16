@@ -27,7 +27,7 @@ enum class Align : uint8_t { Left, Center, Right };
 
 constexpr int16_t CHAR_W = 6;   // one character cell at size 1
 constexpr int16_t CHAR_H = 8;
-constexpr int16_t BAR_H = 24;   // header bar height (text size 2)
+constexpr int16_t BAR_H = 28;   // header bar height (text size 2, 6 px above and below)
 
 int16_t textWidth(const char* s, uint8_t size);   // pixels: characters x 6 x size
 
@@ -43,10 +43,10 @@ void fitText(const char* s, uint8_t size, int16_t maxW, char* out, size_t outSiz
 // in its ink color: `left` from x 6, `right` (optional) right-aligned at x 474.
 void headerBar(const char* left, const char* right, int16_t y = 0);
 
-// List rows (Settings, watchlist): 30 px tall, every 31 px from y 30 (8 fit above the
+// List rows (Settings, watchlist): 30 px tall, every 31 px from y 32 (8 fit above the
 // pager rule at y 284). Label at x 8, value right-aligned at x 472, dot leaders between
 // them if `leaders`; a highlighted row gets the theme's highlight fill and edge stripe.
-constexpr int16_t LISTROW_Y0 = 30, LISTROW_PITCH = 31, LISTROW_H = 30;
+constexpr int16_t LISTROW_Y0 = 32, LISTROW_PITCH = 31, LISTROW_H = 30;
 void listRow(int16_t y, const char* label, const char* value, uint16_t valueColor, bool highlighted,
              bool leaders = true);
 
@@ -57,6 +57,7 @@ void button(int16_t x, int16_t y, int16_t w, int16_t h, const char* label, uint8
             bool filled, bool highlighted);
 
 void dashedHLine(int16_t x, int16_t y, int16_t w, uint16_t color, int16_t dash = 4, int16_t gap = 4);
+void dashedVLine(int16_t x, int16_t y, int16_t h, uint16_t color, int16_t dash = 4, int16_t gap = 4);
 void thickLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color);   // 2 px tall
 
 // `from` blended toward `to` by amount/255 (RGB565).

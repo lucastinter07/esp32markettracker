@@ -17,8 +17,8 @@ using ui::Align;
 
 // Layout (480 x 320), as on the design canvas (page "FINAL - Layout A - Graphite")
 static const int16_t SYMBOL_X = 100, NAME_X = 156;
-static const int16_t PRICE_Y = 32;                   // size 4 price; change and range name at y 46
-static const int16_t BODY_Y = 66, BODY_H = 214;      // page content: y 66 .. 279
+static const int16_t PRICE_Y = 34;                   // size 4 price; change and range name at y 48
+static const int16_t BODY_Y = 68, BODY_H = 212;      // page content: y 68 .. 279
 static const ChartBox DAY_BOX = {8, 78, 396, 158};   // plot area; labels right, time row under
 static const ChartBox CMP_BOX = {8, 92, 396, 144};   // compare: legend row above the plot
 static const int16_t BTN_Y = 282, BTN_H = 30;
@@ -78,13 +78,13 @@ static void upperCase(char* s) {
 
 static void drawBadge(bool pinned) {
   const ui::Palette& p = ui::pal();
-  ui::text(cfg::SCREEN_W - 6, 9, pinned ? "PINNED" : "  AUTO", 1, barDim(), p.bar, Align::Right);
+  ui::text(cfg::SCREEN_W - 6, 11, pinned ? "PINNED" : "  AUTO", 1, barDim(), p.bar, Align::Right);
 }
 
 static void drawHeader(const SymbolState& s, bool pinned) {
   const ui::Palette& p = ui::pal();
   ui::headerBar("< BACK", nullptr);
-  int16_t x = ui::text(SYMBOL_X, 4, s.symbol, 2, p.ink, p.bar) + 8;
+  int16_t x = ui::text(SYMBOL_X, 6, s.symbol, 2, p.ink, p.bar) + 8;
   if (s.profile.valid) {
     if (x < NAME_X) x = NAME_X;
     char name[sizeof(s.profile.name)];
@@ -92,7 +92,7 @@ static void drawHeader(const SymbolState& s, bool pinned) {
     upperCase(name);
     char shown[sizeof(name)];
     ui::fitText(name, 1, cfg::SCREEN_W - 6 - 6 * 6 - 12 - x, shown, sizeof(shown));   // up to "PINNED"
-    ui::text(x, 9, shown, 1, barDim(), p.bar);
+    ui::text(x, 11, shown, 1, barDim(), p.bar);
   }
   drawBadge(pinned);
 }

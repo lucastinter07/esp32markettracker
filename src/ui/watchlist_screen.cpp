@@ -27,8 +27,8 @@ static const int16_t NAME_X = 104;              // company name / index label in
 static const int16_t RULE_Y = 284, HINT_Y = 296;
 
 // Entry box (typed ticker or price) and the one-line message under it
-static const int16_t ENTRY_X = 8, ENTRY_Y = 32, ENTRY_W = 464, ENTRY_H = 40;
-static const int16_t MSG_Y = 78;
+static const int16_t ENTRY_X = 8, ENTRY_Y = 34, ENTRY_W = 464, ENTRY_H = 40;
+static const int16_t MSG_Y = 80;
 
 // Keyboard: 3 rows of 10 keys (43 x 44, 47 px apart), then CANCEL and OK.
 static const int16_t KEY_X0 = 7, KEY_W = 43, KEY_PITCH = 47;

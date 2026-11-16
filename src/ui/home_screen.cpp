@@ -17,10 +17,12 @@ namespace home {
 using ui::Align;
 
 // Layout (480 x 320), as on the design canvas ("★ FINAL · Layout A · Graphite")
-static const int16_t HEAD_Y = 30;                      // column headings, size 1
+static const int16_t HEAD_Y = 32;                      // column headings, size 1
 static const int16_t ROW_Y0 = 42, ROW_PITCH = 44, ROW_H = 42;
-static const int16_t SYM_X = 8;
-static const int16_t LAST_RIGHT = 170, CHG_RIGHT = 252, PCT_RIGHT = 340;   // right edges, size 2
+// Each column starts at a fixed x, with its heading exactly above it (left-aligned, so the
+// headings line up with the text under them). Room per column at size 2: SYM 7 characters,
+// LAST 7 ("1234.56"), CHG 6 ("+12.34"), % 7 ("+12.34%").
+static const int16_t SYM_X = 8, LAST_X = 96, CHG_X = 188, PCT_X = 270;
 static const int16_t SPARK_X = 362, SPARK_W = 110, SPARK_H = 26;
 static const int16_t INDEX_RULE_Y = 264, INDEX_Y = 274, INDEX_X[2] = {8, 248};
 static const int16_t HINT_Y = 300;
@@ -117,18 +119,19 @@ static void drawRow(int i, bool highlighted) {
   }
 
   if (!s.hasData) {
-    ui::text(96, y + 13, "WAITING...", 2, p.dim, bg);
+    ui::text(LAST_X, y + 13, "WAITING...", 2, p.dim, bg);
     return;
   }
   bool up = s.quote.change >= 0;
   uint16_t color = up ? p.up : p.down;
   char buf[16];
-  snprintf(buf, sizeof(buf), "%.2f", s.quote.price);
-  ui::text(LAST_RIGHT, y + 13, buf, 2, stale ? p.dim : p.text, bg, Align::Right);   // grey = may be out of date
-  snprintf(buf, sizeof(buf), fabsf(s.quote.change) >= 100 ? "%+.1f" : "%+.2f", s.quote.change);
-  ui::text(CHG_RIGHT, y + 13, buf, 2, color, bg, Align::Right);
+  float price = s.quote.price, chg = s.quote.change;
+  snprintf(buf, sizeof(buf), price >= 10000 ? "%.1f" : "%.2f", price);   // at most 7 characters
+  ui::text(LAST_X, y + 13, buf, 2, stale ? p.dim : p.text, bg);   // grey = may be out of date
+  snprintf(buf, sizeof(buf), fabsf(chg) >= 1000 ? "%+.0f" : (fabsf(chg) >= 100 ? "%+.1f" : "%+.2f"), chg);
+  ui::text(CHG_X, y + 13, buf, 2, color, bg);
   snprintf(buf, sizeof(buf), "%+.2f%%", s.quote.changePct);
-  ui::text(PCT_RIGHT, y + 13, buf, 2, color, bg, Align::Right);
+  ui::text(PCT_X, y + 13, buf, 2, color, bg);
   drawSparkline(SPARK_X, y + 8, s.intraday, color);
 }
 
@@ -171,10 +174,10 @@ void drawFull(int highlightRow) {
   marketOpen = marketIsOpenNow();
   display().fillScreen(p.bg);
   statusBarDraw(true);
-  ui::text(6, HEAD_Y, "SYM", 1, p.dim, p.bg);
-  ui::text(LAST_RIGHT, HEAD_Y, "LAST", 1, p.dim, p.bg, Align::Right);
-  ui::text(CHG_RIGHT, HEAD_Y, "CHG", 1, p.dim, p.bg, Align::Right);
-  ui::text(PCT_RIGHT, HEAD_Y, "%", 1, p.dim, p.bg, Align::Right);
+  ui::text(SYM_X, HEAD_Y, "SYM", 1, p.dim, p.bg);
+  ui::text(LAST_X, HEAD_Y, "LAST", 1, p.dim, p.bg);
+  ui::text(CHG_X, HEAD_Y, "CHG", 1, p.dim, p.bg);
+  ui::text(PCT_X, HEAD_Y, "%", 1, p.dim, p.bg);
   ui::text(SPARK_X, HEAD_Y, "TODAY", 1, p.dim, p.bg);
   for (int i = 0; i < cfg::NUM_TICKERS; i++) {
     drawRow(i, i == highlightRow);

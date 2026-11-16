@@ -19,8 +19,8 @@ namespace sectorsui {
 using ui::Align;
 
 // Layout (px). The map box is the one test_treemap checks the text fitting against.
-static const int16_t MAP_X = 4, MAP_Y = 28, MAP_W = 472, MAP_H = 264, MAP_GAP = 2;
-static const int16_t GRID_COLS = 4, GRID_W = 115, GRID_H = 85, GRID_GAP = 4;   // 4 x 115 + 3 x 4 = 472
+static const int16_t MAP_X = 4, MAP_Y = 32, MAP_W = 472, MAP_H = 260, MAP_GAP = 2;
+static const int16_t GRID_COLS = 4, GRID_W = 115, GRID_H = 84, GRID_GAP = 4;   // 4 x 115 + 3 x 4 = 472
 static const int16_t FOOTER_Y = 302;
 
 static const char* const DAY_NAMES[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};

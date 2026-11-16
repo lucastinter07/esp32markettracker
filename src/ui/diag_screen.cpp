@@ -22,7 +22,7 @@
 namespace diagui {
 
 // ---------- Layout (layout A: header bar, rows, grouped tab buttons like Detail's) ----------
-static const int16_t ROW_Y0 = 34, ROW_H = 26;   // DEVICE / NETWORK: up to 9 rows
+static const int16_t ROW_Y0 = 36, ROW_H = 26;   // DEVICE / NETWORK: up to 9 rows
 static const int16_t VALUE_X = 190;
 static const int16_t NOTE_Y = 266;               // one line of small text above the tabs
 static const int16_t TAB_X = 8, TAB_Y = 282, TAB_H = 30, TAB_W = 154;
@@ -31,7 +31,7 @@ static const char* const TAB_NAMES[TAB_COUNT] = {"DEVICE", "NETWORK", "DATA"};
 static const int MAX_ROWS = 9;
 
 // DATA tab grid: one row per symbol, one column per kind of data
-static const int16_t GRID_HEAD_Y = 34, GRID_Y0 = 50, GRID_ROW_H = 30;
+static const int16_t GRID_HEAD_Y = 36, GRID_Y0 = 52, GRID_ROW_H = 30;
 static const int GRID_COLS = 6;
 static const char* const GRID_HEADS[GRID_COLS] = {"PRICE", "NAME", "STATS", "HISTORY", "EARN", "CHART"};
 static const int16_t GRID_X[GRID_COLS] = {100, 160, 215, 280, 350, 410};

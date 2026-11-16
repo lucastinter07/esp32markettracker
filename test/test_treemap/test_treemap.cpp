@@ -8,7 +8,7 @@ void setUp() {}
 void tearDown() {}
 
 // The sector map's box on the screen (sector_screen.cpp uses the same numbers).
-static const int16_t MAP_X = 4, MAP_Y = 28, MAP_W = 472, MAP_H = 264, GAP = 2;
+static const int16_t MAP_X = 4, MAP_Y = 32, MAP_W = 472, MAP_H = 260, GAP = 2;
 
 static bool overlap(const TileRect& a, const TileRect& b) {
   return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
@@ -83,14 +83,14 @@ void test_worst_case_text_fits_every_tile() {
   }
 }
 
-// The GRID layout's tiles (115 x 85) fit everything at full size, except a 6-character %.
+// The GRID layout's tiles (115 x 84) fit everything at full size, except a 6-character %.
 void test_grid_tile_fits() {
-  TileText t = fitTile(115, 85, 4, 13, 7, 6, 4);
+  TileText t = fitTile(115, 84, 4, 13, 7, 6, 4);
   TEST_ASSERT_EQUAL(2, t.symSize);
   TEST_ASSERT_EQUAL(2, t.pctSize);   // "-10.4%" at size 3 is 108 px, too wide
   TEST_ASSERT_TRUE(t.showName);
   TEST_ASSERT_TRUE(t.showPrice);
-  t = fitTile(115, 85, 3, 10, 6, 5, 3);   // "+1.8%"
+  t = fitTile(115, 84, 3, 10, 6, 5, 3);   // "+1.8%"
   TEST_ASSERT_EQUAL(3, t.pctSize);
 }
 

@@ -304,8 +304,19 @@ static uint16_t gridColor() {
   return ui::mix(ui::pal().line, ui::pal().dim, 80);
 }
 
+// The grid, the same on every chart: dotted lines across at each price / % label, and dotted
+// lines down at the day boundaries (5D) or at each time / date label inside the plot (the
+// others; none on the plot's left and right edges).
 static void drawGrid(const Plot& p, const float* values, int n) {
   for (int i = 0; i < n; i++) ui::dashedHLine(p.x, p.toY(values[i]), p.w, gridColor(), 1, 3);
+  if (data.separators > 0) {
+    for (int i = 0; i < data.separators; i++) ui::dashedVLine(p.toX(data.separatorFrac[i]), p.y, p.h, gridColor(), 1, 3);
+    return;
+  }
+  for (int i = 0; i < data.labels; i++) {
+    float f = data.labelFrac[i];
+    if (f > 0.01f && f < 0.99f) ui::dashedVLine(p.toX(f), p.y, p.h, gridColor(), 1, 3);
+  }
 }
 
 // SPY's line and legend on the compare chart: a light grey, between the secondary text and
@@ -343,7 +354,7 @@ static void drawAxis(const Plot& p, const float* values, int n, const char* cons
   }
 }
 
-// Time / weekday / date labels under the plot, and separator lines between days (5D).
+// Time / weekday / date labels under the plot.
 static void drawTimeRow(const Plot& p) {
   const ui::Palette& c = ui::pal();
   int16_t y = p.y + p.h + TIME_GAP;
@@ -352,7 +363,6 @@ static void drawTimeRow(const Plot& p) {
     int16_t x = clampI(p.toX(data.labelFrac[i]) - w / 2, p.x, p.x + p.w - w);
     ui::text(x, y, data.labelText[i], 1, c.dim, c.bg);
   }
-  for (int i = 0; i < data.separators; i++) display().drawFastVLine(p.toX(data.separatorFrac[i]), p.y, p.h, c.edge);
 }
 
 static void drawEmpty(const Plot& p) {
