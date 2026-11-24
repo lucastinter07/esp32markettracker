@@ -12,4 +12,4 @@ struct MemoryInfo {
 
 const char* healthResetReason();    // "power on", "CRASH (panic)", ...
 void healthMemory(MemoryInfo& out);
-void healthLogHourly(uint32_t nowMs);   // call every loop; prints once an hour
+void healthLogHourly(uint32_t nowMs);   // call every loop; prints at 2 min, then once an hour

@@ -13,6 +13,7 @@ static const int MAX_LISTED_NETWORKS = 15;
 
 static WifiState state = WifiState::Connecting;
 static bool connectedOnce = false;     // after the first success, dropouts never trigger setup
+static uint32_t dropCount = 0;         // connection losses since boot (health log)
 static uint32_t stateStartMs = 0;
 static uint32_t lastReconnectMs = 0;
 
@@ -333,10 +334,15 @@ void wifiUpdate(uint32_t nowMs) {
         state = WifiState::Connecting;   // the router dropped; auto-reconnect is on
         stateStartMs = nowMs;
         lastReconnectMs = nowMs;
+        dropCount++;
         Serial.println("wifi: connection lost, reconnecting");
       }
       break;
   }
+}
+
+uint32_t wifiDropCount() {
+  return dropCount;
 }
 
 void wifiOpenSetup(uint32_t nowMs) {

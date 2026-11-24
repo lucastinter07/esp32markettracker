@@ -18,6 +18,7 @@ void wifiRetry(uint32_t nowMs);    // from setup mode: try the saved network aga
 void wifiOpenSetup(uint32_t nowMs);   // from Settings: start the setup hotspot (keeps the saved network)
 
 WifiState wifiState();
+uint32_t wifiDropCount();          // times the connection was lost since boot (soak log)
 const char* wifiSetupName();       // hotspot name, e.g. "MarketTracker-A1B2"
 const char* wifiSetupPassword();   // hotspot password, shown on screen
 const char* wifiSetupAddress();    // setup page address, e.g. "192.168.4.1"

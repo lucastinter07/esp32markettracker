@@ -52,7 +52,7 @@ constexpr bool PERF_SPI_BENCH = false;
 // true = mark every download as due at boot (like Settings > Re-download data), to check
 // that prices still come first when there is a lot to download. ~1 MB; leave off normally.
 constexpr bool PERF_FORCE_DOWNLOADS = false;
-constexpr bool PERF_LOG_DRAWS = true;        // log every full-screen redraw with its time
+constexpr bool PERF_LOG_DRAWS = false;       // log every full-screen redraw with its time
 constexpr uint32_t PERF_SUMMARY_S = 3600;    // loop + redraw summary this often
 
 // ---- Buttons (active-low: wire each between the pin and GND) ----

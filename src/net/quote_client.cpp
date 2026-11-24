@@ -157,8 +157,11 @@ static char lastError[48] = "";
 static volatile uint32_t lastErrorMs = 0;
 static volatile bool refreshAllRequested = false;
 
+static volatile uint32_t errorsTotal = 0;   // every failed request since boot (soak log)
+
 static void noteError(const char* text) {
   taskENTER_CRITICAL(&dueLock);
+  errorsTotal++;
   strncpy(lastError, text, sizeof(lastError) - 1);
   lastError[sizeof(lastError) - 1] = '\0';
   lastErrorMs = millis();
@@ -1055,6 +1058,7 @@ void quoteClientStats(FeedStats& out) {
   out.lastQuoteOkMs = lastQuoteOkMs;
   out.lastTdOkMs = lastTdOkMs;
   out.failuresInRow = quoteFailures;
+  out.errorsTotal = errorsTotal;
   out.finnhubTotal = finnhubTotal;
   out.tdTotal = tdTotal;
   out.tdToday = tdToday;

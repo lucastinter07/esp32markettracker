@@ -56,6 +56,7 @@ struct FeedStats {
   uint32_t lastQuoteOkMs;
   uint32_t lastTdOkMs;
   int failuresInRow;          // quote failures in a row (QUOTE ERROR shows from 3)
+  uint32_t errorsTotal;       // failed requests of any kind since boot
   uint32_t finnhubLastMinute; // Finnhub requests in the last 60 s (free limit: 60)
   uint32_t finnhubTotal;      // since boot
   uint32_t tdToday;           // Twelve Data requests today (free limit: 800 a day)
