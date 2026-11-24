@@ -8,6 +8,8 @@
 
 static const uint32_t CONNECT_TIMEOUT_MS = 20000;     // give up on the saved network at boot
 static const uint32_t RECONNECT_INTERVAL_MS = 30000;  // nudge reconnects after a dropout
+static const uint32_t BOOT_RETRY_MS = 4000;          // at boot: a failed attempt is retried this soon
+static const uint32_t SETUP_RETRY_MS = 30000;        // setup mode after a failed boot: try the saved network again
 static const uint32_t SAVE_DELAY_MS = 1500;           // let the "Saved" page reach the phone first
 static const int MAX_LISTED_NETWORKS = 15;
 
@@ -16,6 +18,8 @@ static bool connectedOnce = false;     // after the first success, dropouts neve
 static uint32_t dropCount = 0;         // connection losses since boot (health log)
 static uint32_t stateStartMs = 0;
 static uint32_t lastReconnectMs = 0;
+static uint32_t lastAttemptMs = 0;      // when WiFi.begin() last ran for the saved network
+static bool setupRetries = false;       // setup came from a failed boot connect: keep trying the saved network
 
 static String savedSsid;
 static String savedPass;
@@ -174,9 +178,18 @@ static void startConnect(uint32_t nowMs) {
   loggedReason = 0;
   WiFi.mode(WIFI_STA);
   WiFi.begin(savedSsid.c_str(), savedPass.c_str());
+  lastAttemptMs = nowMs;
   state = WifiState::Connecting;
   stateStartMs = nowMs;
   Serial.printf("wifi: connecting to \"%s\"\n", savedSsid.c_str());
+}
+
+static void onConnected() {
+  state = WifiState::Connected;
+  connectedOnce = true;
+  errorText = "";
+  timeSyncStart();
+  Serial.printf("wifi: connected, IP %s\n", WiFi.localIP().toString().c_str());
 }
 
 static void stopSetup() {
@@ -304,7 +317,27 @@ void wifiUpdate(uint32_t nowMs) {
       if (savePending && nowMs - saveAtMs >= SAVE_DELAY_MS) {
         savePending = false;
         stopSetup();
+        setupRetries = false;
         startConnect(nowMs);
+        break;
+      }
+      // Setup came up because the saved network didn't answer at boot (e.g. the hotspot
+      // was off): keep trying it in the background, so the tracker recovers on its own once
+      // the network is back. Not while a phone is on the setup hotspot (connecting would
+      // move the hotspot to the router's channel and drop the phone) or a scan is running.
+      if (setupRetries && WiFi.status() == WL_CONNECTED) {
+        stopSetup();
+        WiFi.mode(WIFI_STA);
+        setupRetries = false;
+        Serial.println("wifi: saved network is back, leaving setup");
+        onConnected();
+        break;
+      }
+      if (setupRetries && !savePending && !scanRunning && WiFi.softAPgetStationNum() == 0 &&
+          nowMs - lastAttemptMs >= SETUP_RETRY_MS) {
+        lastAttemptMs = nowMs;
+        WiFi.disconnect();   // STA only: the setup hotspot keeps running
+        WiFi.begin(savedSsid.c_str(), savedPass.c_str());
       }
       break;
 
@@ -314,15 +347,22 @@ void wifiUpdate(uint32_t nowMs) {
         Serial.printf("wifi: attempt failed, reason %u: %s\n", loggedReason, reasonText(loggedReason));
       }
       if (WiFi.status() == WL_CONNECTED) {
-        state = WifiState::Connected;
-        connectedOnce = true;
-        errorText = "";
-        timeSyncStart();
-        Serial.printf("wifi: connected, IP %s\n", WiFi.localIP().toString().c_str());
+        onConnected();
       } else if (!connectedOnce && nowMs - stateStartMs >= CONNECT_TIMEOUT_MS) {
         // Never connected since boot: probably a wrong password or the network is gone.
+        // Setup mode keeps retrying it in the background (see the Setup case).
         String why = lastDisconnectReason ? reasonText(lastDisconnectReason) : "no response";
         startSetup(nowMs, "Couldn't connect to \"" + savedSsid + "\": " + why);
+        setupRetries = true;
+        lastAttemptMs = nowMs;
+      } else if (!connectedOnce && lastDisconnectReason != 0 && nowMs - lastAttemptMs >= BOOT_RETRY_MS) {
+        // A failed attempt at boot isn't retried by the driver (routers sometimes refuse
+        // the very first one, reason 202): try again a few times within the 20 s.
+        lastAttemptMs = nowMs;
+        lastDisconnectReason = 0;
+        WiFi.disconnect();
+        WiFi.begin(savedSsid.c_str(), savedPass.c_str());
+        Serial.println("wifi: retrying");
       } else if (connectedOnce && nowMs - lastReconnectMs >= RECONNECT_INTERVAL_MS) {
         lastReconnectMs = nowMs;
         WiFi.reconnect();
@@ -355,6 +395,7 @@ void wifiOpenSetup(uint32_t nowMs) {
 void wifiRetry(uint32_t nowMs) {
   if (state != WifiState::Setup || savedSsid.length() == 0) return;
   stopSetup();
+  setupRetries = false;
   startConnect(nowMs);
 }
 

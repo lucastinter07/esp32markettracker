@@ -18,6 +18,7 @@
 #include "hal/buzzer.h"
 #include "hal/display.h"
 #include "net/quote_client.h"
+#include "net/time_sync.h"
 #include "net/wifi_manager.h"
 #include "storage/history.h"
 
@@ -31,6 +32,7 @@ void setup() {
   uint32_t now = millis();
   Serial.printf("boot: firmware %s, last reset = %s\n", cfg::FIRMWARE_VERSION, healthResetReason());
 
+  timeZoneInit();   // before anything reads the clock
   inputInit();
   settingsInit();   // first: the buzzer and backlight read their settings
   displayInit();

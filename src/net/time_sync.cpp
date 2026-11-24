@@ -16,6 +16,14 @@ static void onSync(struct timeval*) {
   everSynced = true;
 }
 
+// The chip keeps counting time through a software restart (crash, upload, Settings > Restart),
+// so timeNowET() can be valid before Wi-Fi is up. The time zone must be set by then, or
+// "Eastern" times would really be UTC (5 hours off) until SNTP starts.
+void timeZoneInit() {
+  setenv("TZ", TZ_EASTERN, 1);
+  tzset();
+}
+
 void timeSyncStart() {
   if (started) return;
   sntp_set_time_sync_notification_cb(onSync);

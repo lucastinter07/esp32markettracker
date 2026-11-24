@@ -3,6 +3,7 @@
 #pragma once
 #include "market_calendar.h"
 
+void timeZoneInit();              // call first in setup(): the clock survives a restart, the zone doesn't
 void timeSyncStart();             // call once Wi-Fi is connected
 bool timeNowET(EtTime& out);      // current US Eastern time; false until synced
 bool marketIsOpenNow();           // regular session right now; false until synced

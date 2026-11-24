@@ -6,3 +6,4 @@
 .claude
 .env
 platformio-device-monitor-*.log
+logs/
