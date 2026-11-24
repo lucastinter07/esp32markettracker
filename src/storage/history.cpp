@@ -248,7 +248,9 @@ void storageSaveEarnings() {
 // while the market is closed (no new quotes until the boot pass gets through).
 
 void storageSaveSectors() {
-  if (!mounted || cfg::DEMO_PRICES) return;
+  // Not before the saved file is loaded: the boot quote pass can price SPY first, and
+  // saving then would replace the other sectors' last values with empty ones.
+  if (!mounted || cfg::DEMO_PRICES || !restored) return;
   File f = LittleFS.open("/sectors.tmp", "w");
   if (!f) return;
   uint8_t count = NUM_SECTOR_QUOTES;
@@ -277,7 +279,8 @@ static int loadSectors() {
     if (f.read((uint8_t*)name, NAME_LEN) != NAME_LEN) break;
     if (f.read((uint8_t*)&q, sizeof(q)) != sizeof(q)) break;
     for (int i = 0; i < NUM_SECTOR_QUOTES; i++) {
-      if (strncmp(sectorSymbol(i), name, NAME_LEN) == 0) {
+      // A live quote that came in before the restore (boot quote pass) is newer: keep it.
+      if (strncmp(sectorSymbol(i), name, NAME_LEN) == 0 && !sectorQuote(i).valid) {
         sectorsRestore(i, q);
         loaded++;
       }

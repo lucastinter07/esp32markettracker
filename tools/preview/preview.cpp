@@ -40,12 +40,15 @@ uint32_t millis() { return 600000; }
 
 static DFRobot_GDL screen;
 DFRobot_GDL& display() { return screen; }
-void displayPushPixels(int16_t x, int16_t y, int16_t w, int16_t h, const uint8_t* rgb666) {
+// The preview's "panel" takes RGB565, 2 bytes per pixel (high byte first).
+uint8_t displayBytesPerPixel() { return 2; }
+void displayPixelBytes(uint16_t color, uint8_t* out) {
+  out[0] = (uint8_t)(color >> 8);
+  out[1] = (uint8_t)color;
+}
+void displayPushPixels(int16_t x, int16_t y, int16_t w, int16_t h, const uint8_t* pixels) {
   for (int16_t j = 0; j < h; j++)
-    for (int16_t i = 0; i < w; i++, rgb666 += 3) {
-      uint16_t c = (uint16_t)(((rgb666[0] >> 3) << 11) | ((rgb666[1] >> 2) << 5) | (rgb666[2] >> 3));
-      screen.drawPixel(x + i, y + j, c);
-    }
+    for (int16_t i = 0; i < w; i++, pixels += 2) screen.drawPixel(x + i, y + j, (uint16_t)((pixels[0] << 8) | pixels[1]));
 }
 
 static Settings currentSettings;

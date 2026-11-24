@@ -7,9 +7,15 @@
 void displayInit();
 DFRobot_GDL& display();
 
-// Writes a w x h block of pixels in one transfer. `rgb666` holds 3 bytes per pixel (the
-// panel's own color format: red, green, blue, each in the top 6 bits), row by row.
-void displayPushPixels(int16_t x, int16_t y, int16_t w, int16_t h, const uint8_t* rgb666);
+// The panel's pixel format: 3 bytes per pixel (RGB666) or 2 (RGB565, cfg::DISPLAY_16BIT).
+uint8_t displayBytesPerPixel();
+// An RGB565 color in the panel's format (displayBytesPerPixel() bytes). Fills use the same
+// conversion, so a text box and a filled area of the same color match to the bit.
+void displayPixelBytes(uint16_t color, uint8_t* out);
+
+// Writes a w x h block of pixels in one transfer: displayBytesPerPixel() bytes per pixel
+// (from displayPixelBytes), row by row.
+void displayPushPixels(int16_t x, int16_t y, int16_t w, int16_t h, const uint8_t* pixels);
 
 // Checks the touch panel and posts a Tap event when a finger first lands
 // (holding a finger down does not repeat the tap).

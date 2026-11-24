@@ -1,5 +1,6 @@
 #include "net/quote_client.h"
 #include <Arduino.h>
+#include "app/perf.h"
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <WiFi.h>
@@ -24,6 +25,7 @@
 #endif
 
 static const uint32_t CLOSED_PASS_GAP_MS = 1500;       // between requests while catching up
+static const uint32_t BOOT_PASS_GAP_MS = 250;          // between the first quotes after boot (8 in ~3 s)
 static const uint32_t CLOSE_PASS_DELAY_MS = 120000;    // let closing prices settle first
 static const uint32_t IDLE_CHECK_MS = 5000;            // how often to re-check while idle
 static const uint32_t ERROR_RETRY_MS = 10000;
@@ -120,6 +122,7 @@ static volatile uint8_t profilesDue = 0;   // company names
 static volatile uint8_t earningsDue = 0;   // earnings dates
 static volatile uint8_t historyDue = 0;    // Twelve Data backfill
 static volatile bool benchmarkHistoryDue = false;   // the same for SPY (compare charts, 8B)
+static volatile bool benchmarkGapDue = false;       // SPY's day chart has a hole (compare 1H / 1D)
 static volatile uint8_t quoteDue = 0;      // a slot got a new ticker: price it next (all symbols)
 static bool recheckRequested = false;      // main loop: re-run the "what's missing" checks now
 
@@ -502,6 +505,17 @@ static Fetch fetchGap(HTTPClient& http, WiFiClientSecure& tls, const char* symbo
   return out.count > 0 ? Fetch::Ok : Fetch::UnknownSymbol;
 }
 
+// True when SPY is one of the index slots (it is then priced with the other symbols).
+// Reads the names through symbolSnapshot(), so it is safe from the task.
+static bool benchmarkIsIndexSlot() {
+  char name[SYMBOL_MAX_LEN + 1];
+  for (int i = cfg::NUM_TICKERS; i < NUM_SYMBOLS; i++) {
+    symbolSnapshot(i, name);
+    if (strcmp(name, cfg::BENCHMARK_SYMBOL) == 0) return true;
+  }
+  return false;
+}
+
 // Runs forever in its own FreeRTOS task.
 static void quoteTask(void*) {
   tls.setCACert(FINNHUB_ROOT_CAS);   // only trust Finnhub's real certificate
@@ -526,6 +540,9 @@ static void quoteTask(void*) {
   uint32_t sectorPassAt = 0;        // while open, the next sector pass starts at this millis()
   bool sectorJustRan = false;       // while open, alternate sector and stock quotes
   int next = 0;
+  // Boot (10B): every symbol gets one quote, then SPY, before any download starts.
+  uint16_t bootLeft = (uint16_t)((1u << NUM_SYMBOLS) - 1);   // bit i = symbol i not priced yet
+  bool bootDone = false;   // the pass and SPY are done: downloads may start
 
   for (;;) {
     if (FINNHUB_API_KEY[0] == '\0') {
@@ -561,19 +578,34 @@ static void quoteTask(void*) {
       lastOpen = open ? 1 : 0;
     }
 
-    if (profilesDue && haveTime && (int32_t)(millis() - profilesRetryAt) >= 0) {
+    // Boot: first a quote for every symbol (the code further down, with short gaps), then
+    // SPY for the compare charts, and only then the downloads (names, earnings, stats,
+    // history), which take a minute or more. So the screens have every price within
+    // seconds of Wi-Fi coming up.
+    if (!bootDone && bootLeft == 0) {
+      bootDone = true;
+      if (!benchmarkIsIndexSlot()) {
+        uint16_t spyOnly = (uint16_t)(1u << BENCHMARK_INDEX);
+        fetchSector(BENCHMARK_INDEX, spyOnly, open);   // one try; the sector pass gets it otherwise
+      }
+      perfMark(PerfMark::BootPassDone);
+      Serial.println("quotes: first pass done, downloads may start");
+      continue;
+    }
+
+    if (bootDone && profilesDue && haveTime && (int32_t)(millis() - profilesRetryAt) >= 0) {
       fetchDueProfiles(http, tls, dayNumber(now.year, now.month, now.day));
       if (profilesDue) profilesRetryAt = millis() + METRICS_RETRY_MS;   // some failed: later
       continue;
     }
 
-    if (earningsDue && haveTime && (int32_t)(millis() - earningsRetryAt) >= 0) {
+    if (bootDone && earningsDue && haveTime && (int32_t)(millis() - earningsRetryAt) >= 0) {
       fetchDueEarnings(http, tls, dayNumber(now.year, now.month, now.day));
       if (earningsDue) earningsRetryAt = millis() + METRICS_RETRY_MS;
       continue;
     }
 
-    if (metricsDue && haveTime && (int32_t)(millis() - metricsRetryAt) >= 0) {
+    if (bootDone && metricsDue && haveTime && (int32_t)(millis() - metricsRetryAt) >= 0) {
       fetchDueMetrics(tls, dayNumber(now.year, now.month, now.day));
       if (metricsDue) metricsRetryAt = millis() + METRICS_RETRY_MS;
       continue;
@@ -583,16 +615,25 @@ static void quoteTask(void*) {
 
     // Morning gap-fill (only asked for during the session): one stock per pass,
     // alternating with quotes like the history backfill below.
-    if (gapDue && historyTurn) {
+    // The stocks first, then SPY (index -1), which the compare charts need.
+    if (bootDone && (gapDue || benchmarkGapDue) && historyTurn) {
       static GapMsg gmsg;   // static: ~650 bytes
-      int i = firstDue(gapDue);
+      int i = gapDue ? firstDue(gapDue) : -1;
       gmsg.index = (int8_t)i;
       char symbol[SYMBOL_MAX_LEN + 1];
-      gmsg.gen = symbolSnapshot(i, symbol);
+      if (i >= 0) {
+        gmsg.gen = symbolSnapshot(i, symbol);
+      } else {
+        gmsg.gen = 0;
+        strncpy(symbol, cfg::BENCHMARK_SYMBOL, SYMBOL_MAX_LEN);
+        symbol[SYMBOL_MAX_LEN] = '\0';
+      }
       Fetch r = fetchGap(tdHttp, tdTls, symbol, gapSessionOpen, gapSessionClose, gmsg);
       if (r == Fetch::Ok) xQueueSend(gapQueue, &gmsg, portMAX_DELAY);
-      clearDueIf(gapDue, i, gmsg.gen);   // one try per stock: if it fails, the chart just starts at boot time
-      if (gapDue == 0) {
+      // One try per symbol: if it fails, the chart just starts at boot time.
+      if (i >= 0) clearDueIf(gapDue, i, gmsg.gen);
+      else benchmarkGapDue = false;
+      if (gapDue == 0 && !benchmarkGapDue) {
         Serial.println("quotes: filled in today's earlier chart");
         if (!historyDue) tdTls.stop();   // free the Twelve Data connection's memory
       }
@@ -604,7 +645,7 @@ static void quoteTask(void*) {
     // History backfill: one stock per pass. While the market is open, a quote runs
     // between each stock, so prices keep updating (just more slowly) during the backfill.
     // The stocks first, then SPY (index -1 in the message).
-    if ((historyDue || benchmarkHistoryDue) && haveTime && historyTurn && (int32_t)(millis() - historyRetryAt) >= 0) {
+    if (bootDone && (historyDue || benchmarkHistoryDue) && haveTime && historyTurn && (int32_t)(millis() - historyRetryAt) >= 0) {
       HistoryMsg hmsg{};
       int i = historyDue ? firstDue(historyDue) : -1;
       hmsg.index = (int8_t)i;
@@ -629,7 +670,7 @@ static void quoteTask(void*) {
       }
       if (historyDue == 0 && !benchmarkHistoryDue) {
         Serial.println("quotes: price history updated");
-        if (!gapDue) tdTls.stop();   // free the Twelve Data connection's memory
+        if (!gapDue && !benchmarkGapDue) tdTls.stop();   // free the Twelve Data connection's memory
       }
       historyJustRan = true;
       taskWait(TD_GAP_MS);
@@ -649,7 +690,7 @@ static void quoteTask(void*) {
     // Sector heat map while open: a pass every SECTOR_REFRESH_S, one sector between each
     // stock quote, so the stocks keep their pace. A new ticker's first price goes first.
     if (open && sectorPending == 0 && (int32_t)(millis() - sectorPassAt) >= 0) sectorPending = ALL_SECTORS;
-    if (open && priority < 0 && sectorPending && !sectorJustRan) {
+    if (open && bootDone && priority < 0 && sectorPending && !sectorJustRan) {
       int k = firstSector(sectorPending);
       if (k == 0) sectorPassAt = millis() + cfg::SECTOR_REFRESH_S * 1000;   // a pass starts
       fetchSector(k, sectorPending, true);
@@ -686,12 +727,14 @@ static void quoteTask(void*) {
     switch (fetchQuote(http, tls, symbol, msg.quote)) {
       case Fetch::Ok:
         sendToMainLoop(msg);
+        bootLeft &= (uint16_t)~(1u << target);
         lastQuoteOkMs = millis();
         if (status != FeedStatus::Live) Serial.println("quotes: live");
         status = FeedStatus::Live;
         quoteFailures = 0;
         break;
       case Fetch::UnknownSymbol:
+        bootLeft &= (uint16_t)~(1u << target);
         break;   // skip it rather than retrying forever
       case Fetch::BadKey:
         status = FeedStatus::BadKey;
@@ -714,10 +757,10 @@ static void quoteTask(void*) {
 
     if (open) {
       if (target == next) next = (next + 1) % NUM_SYMBOLS;
-      taskWait(openGapMs);
+      taskWait(bootLeft ? BOOT_PASS_GAP_MS : openGapMs);
     } else {
       fetched[next] = true;
-      taskWait(CLOSED_PASS_GAP_MS);
+      taskWait(bootLeft ? BOOT_PASS_GAP_MS : CLOSED_PASS_GAP_MS);
     }
   }
 }
@@ -786,7 +829,7 @@ static void requestDataIfDue(uint32_t nowMs) {
   // once during it (first check after 9:50), and once after it (from 15 min after the
   // close, when the provider has the full day). That also covers the previous session's
   // chart when booting before the open or on a weekend.
-  if (TWELVEDATA_API_KEY[0] != '\0' && !gapDue) {
+  if (TWELVEDATA_API_KEY[0] != '\0' && !gapDue && !benchmarkGapDue) {
     int32_t session = lastSessionDay(now);   // the session the day chart shows
     uint32_t open, close;
     sessionBoundsForDay(session, open, close);
@@ -802,6 +845,7 @@ static void requestDataIfDue(uint32_t nowMs) {
       for (int i = 0; i < cfg::NUM_TICKERS; i++) {
         if (stock(i).intraday.hasGap(open, end, 20 * 60)) markDue(gapDue, i);
       }
+      if (benchmark().intraday.hasGap(open, end, 20 * 60)) benchmarkGapDue = true;
     }
   }
 
@@ -853,7 +897,33 @@ static bool spyIsIndexSlot() {
   return false;
 }
 
+// After a restart during (or after) a session, SPY gets the price and previous close from
+// the saved sector pass, so the compare charts work before SPY's first live quote (e.g.
+// while Wi-Fi is still connecting). Only a pass from the session the charts show counts:
+// an older one has the wrong previous close. A live quote always wins.
+static void seedBenchmarkFromSectors(uint32_t nowMs) {
+  static bool done = false;
+  EtTime now;
+  if (done || !storageRestored() || !timeNowET(now)) return;
+  done = true;
+  SymbolState& b = benchmark();
+  const SectorQuote& sq = sectorQuote(BENCHMARK_INDEX);
+  if (b.hasData || !sq.valid || sq.price <= 0) return;
+  uint32_t open, close;
+  sessionBoundsForDay(lastSessionDay(now), open, close);
+  if (sq.fetchedAt < open) return;
+  Quote q;
+  q.price = sq.price;
+  q.change = sq.change;
+  q.changePct = sq.changePct;
+  q.prevClose = sq.price - sq.change;
+  q.timestamp = sq.fetchedAt;
+  b.applyQuote(q, nowMs, false);
+  Serial.printf("quotes: %s seeded from the saved sector pass (%.2f)\n", b.symbol, q.price);
+}
+
 void quoteClientApply(uint32_t nowMs) {
+  seedBenchmarkFromSectors(nowMs);
   QuoteMsg msg;
   while (queue && xQueueReceive(queue, &msg, 0) == pdTRUE) {
     if (msg.kind == MsgKind::Sector) {
@@ -863,6 +933,7 @@ void quoteClientApply(uint32_t nowMs) {
         // (adding these too would overflow the day's 390-point buffer): numbers only.
         bool points = msg.addToHistory && !spyIsIndexSlot();
         benchmark().applyQuote(msg.quote, nowMs, points, msg.fetchedAt);
+        perfMark(PerfMark::SpyPriced);
       }
       if (msg.index == BENCHMARK_INDEX) storageSaveSectors();   // SPY comes last: a pass is complete
       continue;
@@ -881,9 +952,11 @@ void quoteClientApply(uint32_t nowMs) {
       case MsgKind::Quote: {
         SymbolState& s = symbolByIndex(msg.index);
         s.applyQuote(msg.quote, nowMs, msg.addToHistory, msg.fetchedAt);
+        perfSymbolPriced(msg.index);
         // SPY as an index slot: its minute-by-minute quotes also feed the compare charts.
         if (msg.index >= cfg::NUM_TICKERS && strcmp(s.symbol, cfg::BENCHMARK_SYMBOL) == 0) {
           benchmark().applyQuote(msg.quote, nowMs, msg.addToHistory, msg.fetchedAt);
+          perfMark(PerfMark::SpyPriced);
         }
         break;
       }
@@ -920,8 +993,8 @@ void quoteClientApply(uint32_t nowMs) {
   static GapMsg gmsg;
   bool filled = false;
   while (gapQueue && xQueueReceive(gapQueue, &gmsg, 0) == pdTRUE) {
-    if (gmsg.gen != symbolGeneration(gmsg.index)) continue;
-    SymbolState& s = symbolByIndex(gmsg.index);
+    if (gmsg.index >= 0 && gmsg.gen != symbolGeneration(gmsg.index)) continue;
+    SymbolState& s = gmsg.index >= 0 ? symbolByIndex(gmsg.index) : benchmark();
     // Only that session's bars, and none within 2 min of a live point (live points win).
     s.intraday.fillGaps(gmsg.times, gmsg.prices, gmsg.count, gmsg.sessionOpen, gmsg.sessionClose, 120);
     s.version++;

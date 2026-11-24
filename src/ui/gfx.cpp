@@ -7,16 +7,8 @@
 
 namespace ui {
 
-// Up to 4 full-width rows of pixels, 3 bytes each (the panel's RGB666 format).
+// Up to 4 full-width rows of pixels in the panel's format (at most 3 bytes per pixel).
 static uint8_t strip[cfg::SCREEN_W * 3 * 4];
-
-// RGB565 -> the 3 bytes the panel takes, exactly as the library's fillRect sends them, so
-// a text box and a filled area of the same color match to the bit.
-static void toPanel(uint16_t c, uint8_t out[3]) {
-  out[0] = (uint8_t)((c >> 8) & 0xF8);
-  out[1] = (uint8_t)((c >> 3) & 0xFC);
-  out[2] = (uint8_t)(c << 3);
-}
 
 static bool pixelOn(const char* s, int16_t cx, int16_t row, uint8_t size) {
   int16_t cell = CHAR_W * size;
@@ -68,11 +60,13 @@ int16_t text(int16_t x, int16_t y, const char* s, uint8_t size, uint16_t fg, uin
     return end;
   }
 
+  // The same conversion as the fills (hal/display), so text boxes match filled areas.
   uint8_t on[3], off[3];
-  toPanel(fg, on);
-  toPanel(bg, off);
+  displayPixelBytes(fg, on);
+  displayPixelBytes(bg, off);
+  const uint8_t bpp = displayBytesPerPixel();
   int16_t vw = x1 - x0;
-  int16_t rowsPerBlock = (int16_t)(sizeof(strip) / ((size_t)vw * 3));
+  int16_t rowsPerBlock = (int16_t)(sizeof(strip) / ((size_t)vw * bpp));
   for (int16_t by = y0; by < y1; by += rowsPerBlock) {
     int16_t rows = y1 - by < rowsPerBlock ? y1 - by : rowsPerBlock;
     uint8_t* p = strip;
@@ -82,7 +76,7 @@ int16_t text(int16_t x, int16_t y, const char* s, uint8_t size, uint16_t fg, uin
         const uint8_t* c = pixelOn(s, px - x, glyphRow, size) ? on : off;
         *p++ = c[0];
         *p++ = c[1];
-        *p++ = c[2];
+        if (bpp == 3) *p++ = c[2];
       }
     }
     displayPushPixels(x0, by, vw, rows, strip);

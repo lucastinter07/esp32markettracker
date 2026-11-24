@@ -8,7 +8,7 @@ namespace cfg {
 // Shown on the Diagnostics screen and in the boot log. Bump it when you flash a change
 // worth telling apart (phase.patch, e.g. "7.0" = Phase 7, first build; "8.4" = 8D;
 // "9.0" = the Phase 9 GUI, layout A).
-constexpr const char* FIRMWARE_VERSION = "9.0";
+constexpr const char* FIRMWARE_VERSION = "10.1";
 
 // ---- Display (ST7365P over SPI) ----
 // SCK 12 / MOSI 11 / MISO 13 / CS 10 are the ESP32-S3 default SPI pins,
@@ -35,6 +35,22 @@ constexpr int16_t SCREEN_H = 320;
 // with the library's fillRect instead (slower; only for ruling out the block writes if text
 // ever looks wrong on the panel).
 constexpr bool TEXT_BLOCK_WRITES = true;
+// SPI clock for the display. DFRobot_GDL's ESP32 default is 1 MHz (visibly slow).
+constexpr uint32_t TFT_SPI_HZ = 40000000;   // 40 MHz verified clean on the panel 2026-11-23 (was 20)
+// true = 16-bit color (2 bytes per pixel instead of the library's 3; needs the fast path).
+// If colors come out wrong or noisy, set this false first.
+constexpr bool DISPLAY_16BIT = true;
+// true = fills, lines, pixels and text blocks go to the panel through hal/display's own
+// SPI code (large writes, one transaction per area). false = the library's slow per-pixel
+// code, only for ruling the fast path out if something ever looks wrong on the panel.
+constexpr bool DISPLAY_FAST_PATH = true;
+
+// ---- Performance measurements (Phase 10, app/perf) ----
+// true = time fills, text and lines once at boot and log them ("perf: SPI bench ..."),
+// before Wi-Fi starts (it delays the boot by about 2 s, so leave it off for boot timings).
+constexpr bool PERF_SPI_BENCH = false;
+constexpr bool PERF_LOG_DRAWS = true;        // log every full-screen redraw with its time
+constexpr uint32_t PERF_SUMMARY_S = 3600;    // loop + redraw summary this often
 
 // ---- Buttons (active-low: wire each between the pin and GND) ----
 constexpr uint8_t BTN_PREV   = 7;

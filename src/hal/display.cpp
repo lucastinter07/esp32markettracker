@@ -1,18 +1,141 @@
 #include "hal/display.h"
 #include <Arduino.h>
+#include <SPI.h>
 #include <Wire.h>
 #include "DFRobot_Touch.h"
 #include "config.h"
 #include "app/input_event.h"
 
-// The panel's driver class, plus one public helper: the library keeps its raw "send these
-// pixel bytes" call protected, and anti-aliased text needs it (displayPushPixels below).
+// ---------- fast pixel path (Phase 10C) ----------
+// DFRobot_GDL sends every fill as two SPI calls per pixel and every pixel block one byte
+// at a time, and opens 7 SPI transactions just to set the drawing window. Measured at
+// 20 MHz: a full-screen fill took 595 ms (6.2 Mbit/s of the 20 possible) and one pixel
+// 118 us. The library still sets the panel up (init commands, rotation, color mode); after
+// that, all drawing goes through the functions below: one transaction per window, and the
+// pixel bytes in large writes. The library sets the panel to RGB666 (3 bytes per pixel);
+// cfg::DISPLAY_16BIT switches it to RGB565 (2 bytes, a third less to send).
+
+static const uint8_t CMD_COLSET = 0x2A;   // column range
+static const uint8_t CMD_ROWSET = 0x2B;   // row range
+static const uint8_t CMD_RAMWR = 0x2C;    // pixel data follows
+static const uint8_t CMD_COLMOD = 0x3A;   // pixel format: 0x66 = 18-bit, 0x55 = 16-bit
+
+static constexpr bool USE_16BIT = cfg::DISPLAY_FAST_PATH && cfg::DISPLAY_16BIT;   // the library can't send 16-bit
+static constexpr uint8_t BPP = USE_16BIT ? 2 : 3;
+
+static const int FILL_PX = 480;           // one landscape row: the fill pattern buffer
+static uint8_t fillBuf[FILL_PX * 3];
+static int fillBufPx = 0;                 // how many pixels of fillBuf hold fillColor
+static uint16_t fillColor = 0;
+
+// RGB565 as the panel takes it. RGB666 uses the same conversion as the library's
+// rgb565ToRGB666 (5-bit red/blue widened by repeating the lowest bit).
+static inline void toPanel(uint16_t c, uint8_t* out) {
+  if (USE_16BIT) {
+    out[0] = (uint8_t)(c >> 8);
+    out[1] = (uint8_t)c;
+    return;
+  }
+  uint8_t r = c >> 11, g = (c >> 5) & 0x3F, b = c & 0x1F;
+  out[0] = (uint8_t)(((r << 1) | (r & 1)) << 2);
+  out[1] = (uint8_t)(g << 2);
+  out[2] = (uint8_t)(((b << 1) | (b & 1)) << 2);
+}
+
+static inline void busBegin() {
+  SPI.beginTransaction(SPISettings(cfg::TFT_SPI_HZ, MSBFIRST, SPI_MODE0));
+  digitalWrite(cfg::TFT_CS, LOW);
+}
+
+static inline void busEnd() {
+  digitalWrite(cfg::TFT_CS, HIGH);
+  SPI.endTransaction();
+}
+
+static inline void command(uint8_t cmd) {
+  digitalWrite(cfg::TFT_DC, LOW);
+  SPI.write(cmd);
+  digitalWrite(cfg::TFT_DC, HIGH);   // what follows is data
+}
+
+// Pixels of width x height that the next RAMWR data fills, row by row.
+static void window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
+  command(CMD_COLSET);
+  SPI.write32(((uint32_t)x0 << 16) | x1);
+  command(CMD_ROWSET);
+  SPI.write32(((uint32_t)y0 << 16) | y1);
+  command(CMD_RAMWR);
+}
+
+// The panel's driver class with the drawing calls replaced by the fast path (when
+// cfg::DISPLAY_FAST_PATH is on). Adafruit_GFX declares these virtual, so lines, circles and
+// the library's own text all come through here too.
 class TrackerScreen : public DFRobot_ST7365P_320x480_HW_SPI {
  public:
   using DFRobot_ST7365P_320x480_HW_SPI::DFRobot_ST7365P_320x480_HW_SPI;
-  void pushBlock(int16_t x, int16_t y, int16_t w, int16_t h, const uint8_t* rgb666) {
-    setDisplayArea((uint16_t)x, (uint16_t)y, (uint16_t)w, (uint16_t)h);
-    sendColor(const_cast<uint8_t*>(rgb666), (uint32_t)w * h * 3);
+
+  void pushBlock(int16_t x, int16_t y, int16_t w, int16_t h, const uint8_t* pixels) {
+    if (!cfg::DISPLAY_FAST_PATH) {
+      setDisplayArea((uint16_t)x, (uint16_t)y, (uint16_t)w, (uint16_t)h);
+      sendColor(const_cast<uint8_t*>(pixels), (uint32_t)w * h * 3);
+      return;
+    }
+    busBegin();
+    window(_xStart + x, _yStart + y, _xStart + x + w - 1, _yStart + y + h - 1);
+    SPI.writeBytes(pixels, (uint32_t)w * h * BPP);
+    busEnd();
+  }
+
+  void fillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color) override {
+    if (!cfg::DISPLAY_FAST_PATH) {
+      DFRobot_ST7365P_320x480_HW_SPI::fillRect(x, y, w, h, color);
+      return;
+    }
+    // Clip to the screen (the library didn't, so callers stay inside; this is cheap insurance).
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > _width) w = _width - x;
+    if (y + h > _height) h = _height - y;
+    if (w <= 0 || h <= 0) return;
+
+    uint32_t n = (uint32_t)w * h;
+    int need = n < (uint32_t)FILL_PX ? (int)n : FILL_PX;
+    if (color != fillColor) {
+      fillColor = color;
+      fillBufPx = 0;
+    }
+    if (fillBufPx < need) {   // extend the pattern only as far as this fill needs
+      uint8_t px[3];
+      toPanel(color, px);
+      for (int i = fillBufPx; i < need; i++) memcpy(fillBuf + i * BPP, px, BPP);
+      fillBufPx = need;
+    }
+    busBegin();
+    window(_xStart + x, _yStart + y, _xStart + x + w - 1, _yStart + y + h - 1);
+    while (n) {
+      uint32_t k = n < (uint32_t)FILL_PX ? n : FILL_PX;
+      SPI.writeBytes(fillBuf, k * BPP);
+      n -= k;
+    }
+    busEnd();
+  }
+
+  void fillScreen(uint16_t color) override { fillRect(0, 0, _width, _height, color); }
+  void drawFastHLine(int16_t x, int16_t y, int16_t w, uint16_t color) override { fillRect(x, y, w, 1, color); }
+  void drawFastVLine(int16_t x, int16_t y, int16_t h, uint16_t color) override { fillRect(x, y, 1, h, color); }
+
+  void drawPixel(int16_t x, int16_t y, uint16_t color) override {
+    if (!cfg::DISPLAY_FAST_PATH) {
+      DFRobot_ST7365P_320x480_HW_SPI::drawPixel(x, y, color);
+      return;
+    }
+    if (x < 0 || y < 0 || x >= _width || y >= _height) return;
+    uint8_t px[3];
+    toPanel(color, px);
+    busBegin();
+    window(_xStart + x, _yStart + y, _xStart + x, _yStart + y);
+    SPI.writeBytes(px, BPP);
+    busEnd();
   }
 };
 
@@ -73,10 +196,19 @@ static void logTouchController() {
 }
 
 void displayInit() {
-  // SPI clock in Hz. With no value, DFRobot_GDL defaults to 1 MHz on ESP32, slow enough
-  // to watch the screen paint. 20 MHz is safe on breadboard wiring; try 40 MHz if stable.
-  screen.begin(20000000);
+  // SPI clock in Hz (cfg::TFT_SPI_HZ). With no value, DFRobot_GDL defaults to 1 MHz on
+  // ESP32, slow enough to watch the screen paint.
+  screen.begin(cfg::TFT_SPI_HZ);
   screen.setRotation(1);   // landscape: 480 wide x 320 tall
+  if (USE_16BIT) {
+    // The library set 18-bit color; 16-bit sends 2 bytes per pixel instead of 3.
+    busBegin();
+    command(CMD_COLMOD);
+    SPI.write(0x55);
+    busEnd();
+  }
+  Serial.printf("display: SPI %lu MHz, %s, %d-bit color\n", (unsigned long)(cfg::TFT_SPI_HZ / 1000000),
+                cfg::DISPLAY_FAST_PATH ? "fast path" : "library path", USE_16BIT ? 16 : 18);
   screen.fillScreen(0x0000);
 
   resetTouchController();
@@ -92,11 +224,18 @@ DFRobot_GDL& display() {
   return screen;
 }
 
-// The library's own drawPIC() would send these one pixel per call in this color mode; one
-// address window plus one write is much faster (used for anti-aliased text).
-void displayPushPixels(int16_t x, int16_t y, int16_t w, int16_t h, const uint8_t* rgb666) {
+uint8_t displayBytesPerPixel() {
+  return BPP;
+}
+
+void displayPixelBytes(uint16_t color, uint8_t* out) {
+  toPanel(color, out);
+}
+
+// One address window plus one write (ui::text sends each string as a few of these).
+void displayPushPixels(int16_t x, int16_t y, int16_t w, int16_t h, const uint8_t* pixels) {
   if (w <= 0 || h <= 0) return;
-  screen.pushBlock(x, y, w, h, rgb666);
+  screen.pushBlock(x, y, w, h, pixels);
 }
 
 void touchPoll(uint32_t nowMs) {

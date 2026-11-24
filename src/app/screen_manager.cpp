@@ -1,6 +1,7 @@
 #include "app/screen_manager.h"
 #include <Arduino.h>
 #include "app/input_event.h"
+#include "app/perf.h"
 #include "app/schedule.h"
 #include "config.h"
 #include "data/market_data.h"
@@ -34,7 +35,10 @@ static int wrap(int i) {
 void ScreenManager::begin(uint32_t nowMs) {
   mode_ = Mode::Splash;
   modeStartMs_ = nowMs;
-  splash::drawFull();
+  {
+    PerfDraw t(PerfScreen::Splash, true);
+    splash::drawFull();
+  }
   Serial.println("screen: splash");
 }
 
@@ -57,13 +61,17 @@ void ScreenManager::updateSplash(uint32_t nowMs) {
   boot.clock = timeNowET(now) ? splash::Step::Done : splash::Step::Waiting;
   boot.priced = priced;
   boot.total = NUM_SYMBOLS;
-  splash::update(boot);
+  {
+    PerfDraw t(PerfScreen::Splash, false);
+    splash::update(boot);
+  }
 
   bool done = priced == NUM_SYMBOLS || wifi == WifiState::Setup || problem;
   if ((done && elapsed >= cfg::SPLASH_MIN_MS) || elapsed >= cfg::SPLASH_MAX_MS) finishSplash(nowMs);
 }
 
 void ScreenManager::finishSplash(uint32_t nowMs) {
+  perfMark(PerfMark::SplashDone);
   if (wifiState() == WifiState::Setup) showSetup();
   else if (clockWanted()) showClock(nowMs);
   else showHome(nowMs);
@@ -80,14 +88,20 @@ void ScreenManager::showClock(uint32_t nowMs) {
   detail::resetCompare();
   mode_ = Mode::Clock;
   modeStartMs_ = nowMs;
-  clockui::drawFull();
+  {
+    PerfDraw t(PerfScreen::Clock, true);
+    clockui::drawFull();
+  }
   Serial.println("screen: overnight clock");
 }
 
 void ScreenManager::showSetup() {
   mode_ = Mode::Setup;
   bannerShown_ = false;   // the setup screen replaces everything
-  wifisetup::drawFull();
+  {
+    PerfDraw t(PerfScreen::Setup, true);
+    wifisetup::drawFull();
+  }
   Serial.println("screen: wifi setup");
 }
 
@@ -95,7 +109,10 @@ void ScreenManager::showSettings(uint32_t nowMs, int row) {
   mode_ = Mode::Settings;
   modeStartMs_ = nowMs;
   settingsRow_ = row;
-  settingsui::drawFull(settingsRow_);
+  {
+    PerfDraw t(PerfScreen::Settings, true);
+    settingsui::drawFull(settingsRow_);
+  }
   Serial.println("screen: settings");
 }
 
@@ -103,7 +120,10 @@ void ScreenManager::showHome(uint32_t nowMs) {
   detail::resetCompare();   // leaving Detail: the next one opens on the normal chart
   mode_ = Mode::Home;
   modeStartMs_ = nowMs;
-  home::drawFull(highlight_);
+  {
+    PerfDraw t(PerfScreen::Home, true);
+    home::drawFull(highlight_);
+  }
   Serial.println("screen: home");
 }
 
@@ -111,7 +131,10 @@ void ScreenManager::showDetail(int ticker, bool pinned, uint32_t nowMs) {
   mode_ = pinned ? Mode::PinnedDetail : Mode::AutoDetail;
   modeStartMs_ = nowMs;
   ticker_ = ticker;
-  detail::drawFull(ticker, pinned, page_);
+  {
+    PerfDraw t(PerfScreen::Detail, true);
+    detail::drawFull(ticker, pinned, page_);
+  }
   Serial.printf("screen: detail %d (%s)\n", ticker, pinned ? "pinned" : "auto");
 }
 
@@ -119,7 +142,10 @@ void ScreenManager::showSectors(bool pinned, uint32_t nowMs) {
   mode_ = Mode::Sectors;
   modeStartMs_ = nowMs;
   sectorsAuto_ = !pinned;
-  sectorsui::drawFull();
+  {
+    PerfDraw t(PerfScreen::Sectors, true);
+    sectorsui::drawFull();
+  }
   Serial.printf("screen: sectors (%s)\n", pinned ? "pinned" : "auto");
 }
 
@@ -184,6 +210,7 @@ void ScreenManager::update(uint32_t nowMs) {
         showDetail(nextAutoTicker_, false, nowMs);
         nextAutoTicker_ = wrap(nextAutoTicker_ + 1);
       } else {
+        PerfDraw t(PerfScreen::Home, false);
         home::update(highlight_);
       }
       break;
@@ -198,27 +225,36 @@ void ScreenManager::update(uint32_t nowMs) {
         // Halfway through, turn to the stats page.
         if (page_ != detail::Page::Stats && elapsed >= detailMs / 2) {
           page_ = detail::Page::Stats;
+          PerfDraw t(PerfScreen::DetailPage, true);
           detail::setPage(ticker_, page_);
         }
+        PerfDraw t(PerfScreen::Detail, false);
         detail::update(ticker_);
         detail::drawCountdown(1.0f - (float)elapsed / detailMs);
       }
       break;
     }
 
-    case Mode::PinnedDetail:
+    case Mode::PinnedDetail: {
+      PerfDraw t(PerfScreen::Detail, false);
       detail::update(ticker_);   // no timeout: stays until BACK
       break;
+    }
 
     case Mode::Sectors:
       // In the auto cycle it stays as long as Home does; opened by hand, until BACK.
       if (sectorsAuto_ && elapsed >= cycleHomeMs()) showHome(nowMs);
-      else sectorsui::update();
+      else {
+        PerfDraw t(PerfScreen::Sectors, false);
+        sectorsui::update();
+      }
       break;
 
-    case Mode::Clock:
+    case Mode::Clock: {
+      PerfDraw t(PerfScreen::Clock, false);
       clockui::update();
       break;
+    }
 
     case Mode::Setup:
       break;   // static instructions; the Wi-Fi manager runs the hotspot
@@ -228,18 +264,26 @@ void ScreenManager::update(uint32_t nowMs) {
 
     case Mode::Settings:
       if (elapsed >= SETTINGS_IDLE_MS) showHome(nowMs);
-      else settingsui::update(settingsRow_);
+      else {
+        PerfDraw t(PerfScreen::Settings, false);
+        settingsui::update(settingsRow_);
+      }
       break;
 
     case Mode::Watchlist:
       if (watchui::busy()) modeStartMs_ = nowMs;   // waiting on a ticker check is not idle
       if (elapsed >= SETTINGS_IDLE_MS) showHome(nowMs);
-      else watchui::update(nowMs);
+      else {
+        PerfDraw t(PerfScreen::Watchlist, false);
+        watchui::update(nowMs);
+      }
       break;
 
-    case Mode::Diagnostics:
+    case Mode::Diagnostics: {
+      PerfDraw t(PerfScreen::Diagnostics, false);
       diagui::update(nowMs);   // no time limit: it's meant to be watched
       break;
+    }
   }
 }
 
@@ -247,7 +291,10 @@ void ScreenManager::handleInput(const InputEvent& ev, uint32_t nowMs) {
   lastInputMs_ = nowMs;
   scheduleWake(nowMs);   // at night, any input brings back full brightness for a while
   buzzerClick();
-  handleInputAction(ev, nowMs);
+  {
+    PerfDraw t(PerfScreen::Input, true);
+    handleInputAction(ev, nowMs);
+  }
   // Drawn after the action so a screen change doesn't wipe it straight away.
   if (cfg::TOUCH_DEBUG && ev.type == InputType::Tap) drawTouchMarker(ev.x, ev.y);
 }
@@ -448,6 +495,7 @@ void ScreenManager::showBanner(const AlertEvent& alert, uint32_t nowMs) {
   bannerShown_ = true;
   bannerStock_ = alert.stockIndex;
   bannerUntilMs_ = nowMs + BANNER_MS;
+  PerfDraw t(PerfScreen::Banner, true);
   banner::draw(alert);
 }
 

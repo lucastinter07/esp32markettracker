@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include "app/health.h"
 #include "app/input_event.h"
+#include "app/perf.h"
 #include "app/price_alerts.h"
 #include "app/schedule.h"
 #include "app/screen_manager.h"
@@ -35,6 +36,7 @@ void setup() {
   displayInit();
   backlightInit();
   backlightSet(settings().brightness);
+  if (cfg::PERF_SPI_BENCH) perfSpiBench();
   buttonsInit();
   buzzerInit();
   watchlistInit();   // before marketDataInit(): it names the symbols
@@ -50,9 +52,11 @@ void setup() {
 
   buzzerChime();
   Serial.println("market tracker started");
+  perfMark(PerfMark::SetupDone);
 }
 
 void loop() {
+  uint32_t startUs = micros();
   uint32_t now = millis();
   buttonsPoll(now);
   touchPoll(now);
@@ -64,5 +68,7 @@ void loop() {
   scheduleUpdate(now);   // open/close chime + night dimming
   screens.update(now);
   healthLogHourly(now);
+  perfUpdate(now);
+  perfLoopTime(micros() - startUs);
   delay(5);
 }
