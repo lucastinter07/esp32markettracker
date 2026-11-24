@@ -49,6 +49,9 @@ constexpr bool DISPLAY_FAST_PATH = true;
 // true = time fills, text and lines once at boot and log them ("perf: SPI bench ..."),
 // before Wi-Fi starts (it delays the boot by about 2 s, so leave it off for boot timings).
 constexpr bool PERF_SPI_BENCH = false;
+// true = mark every download as due at boot (like Settings > Re-download data), to check
+// that prices still come first when there is a lot to download. ~1 MB; leave off normally.
+constexpr bool PERF_FORCE_DOWNLOADS = false;
 constexpr bool PERF_LOG_DRAWS = true;        // log every full-screen redraw with its time
 constexpr uint32_t PERF_SUMMARY_S = 3600;    // loop + redraw summary this often
 

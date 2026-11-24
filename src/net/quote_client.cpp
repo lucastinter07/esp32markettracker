@@ -593,6 +593,11 @@ static void quoteTask(void*) {
       continue;
     }
 
+    if (bootDone && !profilesDue && !earningsDue && !metricsDue && !historyDue && !benchmarkHistoryDue && !gapDue &&
+        !benchmarkGapDue) {
+      perfMark(PerfMark::DownloadsDone);   // first time only
+    }
+
     if (bootDone && profilesDue && haveTime && (int32_t)(millis() - profilesRetryAt) >= 0) {
       fetchDueProfiles(http, tls, dayNumber(now.year, now.month, now.day));
       if (profilesDue) profilesRetryAt = millis() + METRICS_RETRY_MS;   // some failed: later
@@ -865,6 +870,7 @@ static void requestDataIfDue(uint32_t nowMs) {
   // Stats: need the stock's price first (to work out the share count), so a stock without
   // a price yet is left for a later check today.
   if (today != metricsCheckedDay) {
+    static bool forceStats = cfg::PERF_FORCE_DOWNLOADS;   // test switch: re-download every stock's stats once
     bool allPriced = true;
     for (int i = 0; i < cfg::NUM_TICKERS; i++) {
       const SymbolState& s = stock(i);
@@ -872,11 +878,14 @@ static void requestDataIfDue(uint32_t nowMs) {
         allPriced = false;
         continue;
       }
-      if (!s.fundamentals.valid || today - s.fundamentals.fetchedDay >= cfg::METRICS_REFRESH_DAYS) {
+      if (forceStats || !s.fundamentals.valid || today - s.fundamentals.fetchedDay >= cfg::METRICS_REFRESH_DAYS) {
         markDue(metricsDue, i);
       }
     }
-    if (allPriced) metricsCheckedDay = today;
+    if (allPriced) {
+      metricsCheckedDay = today;
+      forceStats = false;
+    }
   }
 }
 

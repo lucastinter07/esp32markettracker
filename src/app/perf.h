@@ -15,6 +15,7 @@ enum class PerfMark : uint8_t {
   SpyPriced,      // SPY (compare charts) has a live quote
   BootPassDone,   // quote task: first quote pass done, downloads may start
   SplashDone,     // the splash screen handed over
+  DownloadsDone,  // quote task: nothing left to download (names, stats, history, ...)
   Count
 };
 void perfMark(PerfMark m);           // safe from either core

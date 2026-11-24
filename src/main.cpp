@@ -45,6 +45,7 @@ void setup() {
   storageInit();
   if (cfg::DEMO_PRICES) fakeFeedInit(now);
   else quoteClientStart();   // background task; waits for Wi-Fi by itself
+  if (cfg::PERF_FORCE_DOWNLOADS && !cfg::DEMO_PRICES) quoteClientRefreshAll();   // test: everything due at boot
 
   // Holding BACK while powering on erases the saved network and opens Wi-Fi setup.
   wifiInit(buttonsBackHeld(), now);

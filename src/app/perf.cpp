@@ -24,6 +24,7 @@ static const char* markName(PerfMark m) {
     case PerfMark::SpyPriced:    return "SPY priced";
     case PerfMark::BootPassDone: return "quote pass done, downloads start";
     case PerfMark::SplashDone:   return "splash done";
+    case PerfMark::DownloadsDone: return "downloads done";
     case PerfMark::Count:        break;
   }
   return "?";
