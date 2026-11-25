@@ -8,7 +8,7 @@ namespace cfg {
 // Shown on the Diagnostics screen and in the boot log. Bump it when you flash a change
 // worth telling apart (phase.patch, e.g. "7.0" = Phase 7, first build; "8.4" = 8D;
 // "9.0" = the Phase 9 GUI, layout A).
-constexpr const char* FIRMWARE_VERSION = "10.1";
+constexpr const char* FIRMWARE_VERSION = "12.0";
 
 // ---- Display (ST7365P over SPI) ----
 // SCK 12 / MOSI 11 / MISO 13 / CS 10 are the ESP32-S3 default SPI pins,
@@ -71,6 +71,19 @@ constexpr uint32_t HOME_DURATION_MS   = 30000;
 constexpr uint32_t SPLASH_MIN_MS      = 2500;    // startup screen shows at least this long
 constexpr uint32_t SPLASH_MAX_MS      = 200000;  // safety limit: it normally leaves once every price is in
                                                  // (a tap or button skips it any time)
+// Settings > Transitions: a fading screen change dims the backlight to dark over this
+// long, draws the new screen, and brings it back up over this long again.
+constexpr uint32_t FADE_MS = 150;
+
+// Watchdogs (Phase 12). The quote task counts as stuck when one step (a download, a
+// connection attempt) runs this long without reaching one of its pauses: the device saves
+// its charts and restarts. The main loop restarts the chip if one pass takes this long.
+constexpr uint32_t QUOTE_WATCHDOG_S = 180;
+constexpr uint32_t LOOP_WATCHDOG_S = 15;
+// Big downloads (company stats: a new encrypted connection + a 196 KB stream; Twelve Data)
+// wait while the largest free block of memory is below this (one HTTPS connection needs
+// ~40 KB), and are retried 5 minutes later.
+constexpr uint32_t DOWNLOAD_MIN_BLOCK = 45000;
 constexpr uint32_t DETAIL_DURATION_MS = 20000;   // auto mode: chart page, then stats page halfway
 
 // ---- Watchlist ----
@@ -112,6 +125,10 @@ constexpr uint32_t SECTOR_REFRESH_S = 300;
 // Testing aid for price alerts: > 0 replaces the Settings threshold (e.g. 0.1 %, so the
 // first live quote of any stock that moved fires one). Alerts must still be ON in Settings.
 constexpr float ALERT_TEST_PERCENT = 0;
+// No alerts (daily move or price target) until this long after the open, and only on
+// quotes fetched after that: the open chime isn't drowned out, and the quotes fetched
+// before the open (their % change is still against an older close) can't fire false alerts.
+constexpr uint32_t ALERT_HOLD_S = 300;
 
 // true: made-up prices from data/fake_feed (no network needed), labelled DEMO PRICES.
 // false: live prices from Finnhub (net/quote_client), using the key in .env.

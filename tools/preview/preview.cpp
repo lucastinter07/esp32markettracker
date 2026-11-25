@@ -72,6 +72,7 @@ void targetPut(int stockIndex, bool above, float price) { targets[stockIndex][ab
 Settings& settingsForEdit();
 void settingsSave() {}
 const char* cycleSpeedName(uint8_t speed) { return speed == CYCLE_FAST ? "FAST" : (speed == CYCLE_SLOW ? "SLOW" : "NORMAL"); }
+const char* transitionsName(uint8_t t) { return t == TRANSITIONS_RAPID ? "RAPID" : (t == TRANSITIONS_SMOOTH ? "SMOOTH" : "HYBRID"); }
 const char* watchlistSymbol(int i) { return symbolByIndex(i).symbol; }
 bool watchlistIsDefault() { return true; }
 int watchlistFind(const char* symbol) {

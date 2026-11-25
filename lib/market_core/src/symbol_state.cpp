@@ -10,6 +10,7 @@ void SymbolState::applyQuote(const Quote& q, uint32_t nowMs, bool addToHistory, 
   }
   hasData = true;
   lastUpdateMs = nowMs;
+  fetchedAt = pointTime;
   version++;
 }
 
@@ -39,6 +40,7 @@ void SymbolState::clearData() {
   earnings = Earnings();
   hasData = false;
   lastUpdateMs = 0;
+  fetchedAt = 0;
   version++;
 }
 

@@ -1,4 +1,6 @@
 #include "ui/gfx.h"
+#include <math.h>
+#include <stdlib.h>
 #include <string.h>
 #include "config.h"
 #include "hal/display.h"
@@ -154,6 +156,31 @@ void thickLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color) {
   DFRobot_GDL& gfx = display();
   gfx.drawLine(x0, y0, x1, y1, color);
   gfx.drawLine(x0, y0 + 1, x1, y1 + 1, color);
+}
+
+void spanLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color, int16_t extra) {
+  DFRobot_GDL& gfx = display();
+  if (x1 < x0) {
+    int16_t t = x0; x0 = x1; x1 = t;
+    t = y0; y0 = y1; y1 = t;
+  }
+  int16_t dx = x1 - x0, dy = y1 - y0;
+  if (dx == 0) {
+    int16_t top = y0 < y1 ? y0 : y1;
+    gfx.fillRect(x0, top, 1, abs(dy) + 1 + extra, color);
+    return;
+  }
+  for (int16_t i = 0; i <= dx; i++) {
+    // The line's height at this column's left and right edges (half a pixel either side),
+    // kept within the segment, gives the span the column must cover.
+    float a = i - 0.5f, b = i + 0.5f;
+    if (a < 0) a = 0;
+    if (b > dx) b = dx;
+    int16_t ya = y0 + (int16_t)lroundf(dy * a / dx);
+    int16_t yb = y0 + (int16_t)lroundf(dy * b / dx);
+    int16_t top = ya < yb ? ya : yb, bottom = ya < yb ? yb : ya;
+    gfx.fillRect(x0 + i, top, 1, bottom - top + 1 + extra, color);
+  }
 }
 
 uint16_t mix(uint16_t from, uint16_t to, uint8_t amount) {

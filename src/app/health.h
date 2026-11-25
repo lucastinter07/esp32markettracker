@@ -11,5 +11,7 @@ struct MemoryInfo {
 };
 
 const char* healthResetReason();    // "power on", "CRASH (panic)", ...
+void healthNoteWatchdogRestart();   // before ESP.restart() by the quote watchdog: the next boot says so
+void healthLogBoard();              // boot: flash chip size (8 or 16 MB: N8R8 vs N16R8) and PSRAM
 void healthMemory(MemoryInfo& out);
 void healthLogHourly(uint32_t nowMs);   // call every loop; prints at 2 min, then once an hour

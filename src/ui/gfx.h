@@ -59,6 +59,10 @@ void button(int16_t x, int16_t y, int16_t w, int16_t h, const char* label, uint8
 void dashedHLine(int16_t x, int16_t y, int16_t w, uint16_t color, int16_t dash = 4, int16_t gap = 4);
 void dashedVLine(int16_t x, int16_t y, int16_t h, uint16_t color, int16_t dash = 4, int16_t gap = 4);
 void thickLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color);   // 2 px tall
+// A chart line segment drawn as one vertical span per pixel column (1 px wide, `extra` px
+// taller at the bottom: 1 = the 2 px chart line). Same look as drawLine for chart data, but
+// one transfer per column instead of one per pixel: a 390-point day chart draws in a few ms.
+void spanLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color, int16_t extra = 0);
 
 // `from` blended toward `to` by amount/255 (RGB565).
 uint16_t mix(uint16_t from, uint16_t to, uint8_t amount);

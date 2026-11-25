@@ -31,8 +31,11 @@ class ScreenManager {
   void handleSettingsInput(const InputEvent& ev, uint32_t nowMs);
   void pinIfAuto();
   void showBanner(const AlertEvent& alert, uint32_t nowMs);
-  void dismissBanner(uint32_t nowMs);
+  void dismissBanner(bool redraw);
   void redrawCurrent();
+  bool fadeOut();               // starts a screen change; true if it faded out (Settings > Transitions)
+  void fadeIn(bool faded);      // ends it
+  void setDetailPage(detail::Page page);
 
   Mode mode_ = Mode::Splash;
   uint32_t modeStartMs_ = 0;   // when the current screen (or its timer) started
@@ -43,7 +46,7 @@ class ScreenManager {
   int settingsRow_ = 0;        // highlighted row on the Settings screen
   bool bannerShown_ = false;   // a price-alert banner covers the top of the screen
   uint32_t bannerUntilMs_ = 0;
-  uint32_t lastUpdateMs_ = 0;
+  bool inputSwitch_ = false;   // the current screen change comes from touch / a button
   int bannerStock_ = 0;
   detail::Page page_ = detail::Page::Day;   // which Detail page is showing
   bool sectorsAuto_ = false;   // the sector map came up in the auto cycle (times out to Home)

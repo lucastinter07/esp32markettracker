@@ -56,6 +56,7 @@ struct SymbolState {
   Earnings earnings;    // next earnings report (Finnhub calendar)
   bool hasData = false;
   uint32_t lastUpdateMs = 0;
+  uint32_t fetchedAt = 0;   // unix seconds when the latest quote was fetched (0 = unknown)
   // Goes up by one on every update. The UI compares it to the value it last drew,
   // so it redraws only symbols that actually changed.
   uint32_t version = 0;

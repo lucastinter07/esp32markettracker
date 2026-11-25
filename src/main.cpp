@@ -1,6 +1,7 @@
 // Entry point. This file only starts each module and runs the main loop.
 // The actual work lives in the folders under src/ (see CLAUDE.md for the layout).
 #include <Arduino.h>
+#include <esp_task_wdt.h>
 #include "app/health.h"
 #include "app/input_event.h"
 #include "app/perf.h"
@@ -31,6 +32,7 @@ void setup() {
   while (!Serial && millis() < 2000) delay(10);
   uint32_t now = millis();
   Serial.printf("boot: firmware %s, last reset = %s\n", cfg::FIRMWARE_VERSION, healthResetReason());
+  healthLogBoard();
 
   timeZoneInit();   // before anything reads the clock
   inputInit();
@@ -44,6 +46,7 @@ void setup() {
   watchlistInit();   // before marketDataInit(): it names the symbols
   marketDataInit();
   targetsInit();   // after marketDataInit(): targets are matched to the slots' tickers
+  alertsInit();    // today's "already fired" alerts, so a restart doesn't repeat them
   storageInit();
   if (cfg::DEMO_PRICES) fakeFeedInit(now);
   else quoteClientStart();   // background task; waits for Wi-Fi by itself
@@ -54,6 +57,10 @@ void setup() {
   screens.begin(now);
 
   buzzerChime();
+  // Loop watchdog: if one pass of loop() hangs for LOOP_WATCHDOG_S, the chip restarts
+  // (the reset reason then says "CRASH (watchdog)").
+  esp_task_wdt_init(cfg::LOOP_WATCHDOG_S, true);
+  enableLoopWDT();
   Serial.println("market tracker started");
   perfMark(PerfMark::SetupDone);
 }

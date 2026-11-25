@@ -374,12 +374,10 @@ static void drawEmpty(const Plot& p) {
 
 // A line through data points, 2 px tall if `thick`.
 static void drawSeries(const Plot& p, const float* frac, const float* values, int n, uint16_t color, bool thick) {
-  DFRobot_GDL& gfx = display();
   int16_t prevX = p.toX(frac[0]), prevY = p.toY(values[0]);
   for (int i = 1; i < n; i++) {
     int16_t x = p.toX(frac[i]), y = p.toY(values[i]);
-    gfx.drawLine(prevX, prevY, x, y, color);
-    if (thick) gfx.drawLine(prevX, prevY + 1, x, y + 1, color);
+    ui::spanLine(prevX, prevY, x, y, color, thick ? 1 : 0);
     prevX = x;
     prevY = y;
   }

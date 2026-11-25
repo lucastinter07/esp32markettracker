@@ -27,6 +27,7 @@ static const int FILL_PX = 480;           // one landscape row: the fill pattern
 static uint8_t fillBuf[FILL_PX * 3];
 static int fillBufPx = 0;                 // how many pixels of fillBuf hold fillColor
 static uint16_t fillColor = 0;
+static int16_t protectedTop = 0;          // rows 0..protectedTop-1 are not drawn (alert banner)
 
 // RGB565 as the panel takes it. RGB666 uses the same conversion as the library's
 // rgb565ToRGB666 (5-bit red/blue widened by repeating the lowest bit).
@@ -80,6 +81,13 @@ class TrackerScreen : public DFRobot_ST7365P_320x480_HW_SPI {
       sendColor(const_cast<uint8_t*>(pixels), (uint32_t)w * h * 3);
       return;
     }
+    if (y < protectedTop) {   // skip the rows under the protected strip
+      int16_t skip = protectedTop - y;
+      if (skip >= h) return;
+      pixels += (uint32_t)skip * w * BPP;
+      y += skip;
+      h -= skip;
+    }
     busBegin();
     window(_xStart + x, _yStart + y, _xStart + x + w - 1, _yStart + y + h - 1);
     SPI.writeBytes(pixels, (uint32_t)w * h * BPP);
@@ -93,7 +101,7 @@ class TrackerScreen : public DFRobot_ST7365P_320x480_HW_SPI {
     }
     // Clip to the screen (the library didn't, so callers stay inside; this is cheap insurance).
     if (x < 0) { w += x; x = 0; }
-    if (y < 0) { h += y; y = 0; }
+    if (y < protectedTop) { h -= protectedTop - y; y = protectedTop; }
     if (x + w > _width) w = _width - x;
     if (y + h > _height) h = _height - y;
     if (w <= 0 || h <= 0) return;
@@ -129,7 +137,7 @@ class TrackerScreen : public DFRobot_ST7365P_320x480_HW_SPI {
       DFRobot_ST7365P_320x480_HW_SPI::drawPixel(x, y, color);
       return;
     }
-    if (x < 0 || y < 0 || x >= _width || y >= _height) return;
+    if (x < 0 || y < protectedTop || x >= _width || y >= _height) return;
     uint8_t px[3];
     toPanel(color, px);
     busBegin();
@@ -218,6 +226,10 @@ void displayInit() {
   // 319 - raw, which reports every tap 160 px too low.
   touch.setRotation(0);
   logTouchController();
+}
+
+void displaySetProtectedTop(int16_t rows) {
+  protectedTop = rows < 0 ? 0 : rows;
 }
 
 DFRobot_GDL& display() {

@@ -14,6 +14,7 @@
 #include "net/time_sync.h"
 #include "profile_parser.h"
 #include "quote_parser.h"
+#include "app/health.h"
 #include "storage/history.h"
 #include "symbol_text.h"
 
@@ -36,6 +37,7 @@ static const uint32_t METRICS_CHECK_MS = 10000;        // how often the main loo
 static const uint32_t TASK_STACK_BYTES = 12288;        // HTTPS + JSON streaming need a roomy stack
 static const uint32_t TD_GAP_MS = 8000;                // Twelve Data free plan: 8 requests/minute
 static const uint32_t HISTORY_RETRY_MS = 600000;       // after a failed history download
+static const uint32_t LOW_MEMORY_PAUSE_MS = 300000;    // big downloads wait this long when memory is short
 
 // One message from the background task to the main loop.
 enum class MsgKind : uint8_t { Quote, NewSession, Metrics, Profile, Earnings, Sector };
@@ -158,6 +160,36 @@ static volatile uint32_t lastErrorMs = 0;
 static volatile bool refreshAllRequested = false;
 
 static volatile uint32_t errorsTotal = 0;   // every failed request since boot (soak log)
+
+// ---------- watchdog (Phase 12) ----------
+// The task marks when it starts a step of work and when it goes back to waiting. The main
+// loop checks: a step that runs longer than cfg::QUOTE_WATCHDOG_S means the task is stuck
+// (e.g. a connection that never answers), and the device restarts.
+static volatile uint32_t busySinceMs = 0;   // 0 = waiting; else millis() when the current step started
+static const char* volatile busyStep = "";
+
+static void markBusy(const char* step) {
+  busyStep = step;
+  uint32_t t = millis();
+  busySinceMs = t ? t : 1;
+}
+
+static void markIdle() {
+  busySinceMs = 0;
+}
+
+// Big downloads only when there is room for them (see cfg::DOWNLOAD_MIN_BLOCK).
+static uint32_t bigPausedUntil = 0;
+static void noteError(const char* text);
+static bool bigDownloadAllowed() {
+  if ((int32_t)(millis() - bigPausedUntil) < 0) return false;
+  uint32_t block = ESP.getMaxAllocHeap();
+  if (block >= cfg::DOWNLOAD_MIN_BLOCK) return true;
+  Serial.printf("quotes: low memory (largest free block %u bytes), big downloads wait 5 min\n", (unsigned)block);
+  noteError("low memory: downloads paused");
+  bigPausedUntil = millis() + LOW_MEMORY_PAUSE_MS;
+  return false;
+}
 
 static void noteError(const char* text) {
   taskENTER_CRITICAL(&dueLock);
@@ -316,13 +348,26 @@ static void serviceLookup() {
 // Like vTaskDelay, but wakes up to answer a symbol check straight away, so the editor
 // doesn't have to wait for a long pause between downloads to end.
 static void taskWait(uint32_t ms) {
+  const char* step = busyStep;
+  markIdle();   // waiting is not being stuck
   uint32_t start = millis();
   for (;;) {
     uint32_t waited = millis() - start;
-    if (waited >= ms) return;
-    if (xSemaphoreTake(lookupSignal, pdMS_TO_TICKS(ms - waited)) != pdTRUE) return;
-    if (WiFi.isConnected()) serviceLookup();
+    if (waited >= ms) break;
+    if (xSemaphoreTake(lookupSignal, pdMS_TO_TICKS(ms - waited)) != pdTRUE) break;
+    if (WiFi.isConnected()) {
+      markBusy("symbol check");
+      serviceLookup();
+      markIdle();
+    }
   }
+  markBusy(step);
+}
+
+// vTaskDelay that counts as waiting for the watchdog.
+static void taskSleep(uint32_t ms) {
+  markIdle();
+  vTaskDelay(pdMS_TO_TICKS(ms));
 }
 
 static void sendToMainLoop(const QuoteMsg& msg) {
@@ -550,13 +595,14 @@ static void quoteTask(void*) {
   for (;;) {
     if (FINNHUB_API_KEY[0] == '\0') {
       status = FeedStatus::NoKey;
-      vTaskDelay(pdMS_TO_TICKS(60000));
+      taskSleep(60000);
       continue;
     }
     if (!WiFi.isConnected()) {
-      vTaskDelay(pdMS_TO_TICKS(1000));
+      taskSleep(1000);
       continue;
     }
+    markBusy("quotes");
     if (lookupPending) {
       xSemaphoreTake(lookupSignal, 0);   // consume the signal; the request is handled here
       serviceLookup();
@@ -602,18 +648,21 @@ static void quoteTask(void*) {
     }
 
     if (bootDone && profilesDue && haveTime && (int32_t)(millis() - profilesRetryAt) >= 0) {
+      markBusy("company names");
       fetchDueProfiles(http, tls, dayNumber(now.year, now.month, now.day));
       if (profilesDue) profilesRetryAt = millis() + METRICS_RETRY_MS;   // some failed: later
       continue;
     }
 
     if (bootDone && earningsDue && haveTime && (int32_t)(millis() - earningsRetryAt) >= 0) {
+      markBusy("earnings dates");
       fetchDueEarnings(http, tls, dayNumber(now.year, now.month, now.day));
       if (earningsDue) earningsRetryAt = millis() + METRICS_RETRY_MS;
       continue;
     }
 
-    if (bootDone && metricsDue && haveTime && (int32_t)(millis() - metricsRetryAt) >= 0) {
+    if (bootDone && metricsDue && haveTime && (int32_t)(millis() - metricsRetryAt) >= 0 && bigDownloadAllowed()) {
+      markBusy("company stats");
       fetchDueMetrics(tls, dayNumber(now.year, now.month, now.day));
       if (metricsDue) metricsRetryAt = millis() + METRICS_RETRY_MS;
       continue;
@@ -624,7 +673,8 @@ static void quoteTask(void*) {
     // Morning gap-fill (only asked for during the session): one stock per pass,
     // alternating with quotes like the history backfill below.
     // The stocks first, then SPY (index -1), which the compare charts need.
-    if (bootDone && (gapDue || benchmarkGapDue) && historyTurn) {
+    if (bootDone && (gapDue || benchmarkGapDue) && historyTurn && bigDownloadAllowed()) {
+      markBusy("gap-fill");
       static GapMsg gmsg;   // static: ~650 bytes
       int i = gapDue ? firstDue(gapDue) : -1;
       gmsg.index = (int8_t)i;
@@ -653,7 +703,9 @@ static void quoteTask(void*) {
     // History backfill: one stock per pass. While the market is open, a quote runs
     // between each stock, so prices keep updating (just more slowly) during the backfill.
     // The stocks first, then SPY (index -1 in the message).
-    if (bootDone && (historyDue || benchmarkHistoryDue) && haveTime && historyTurn && (int32_t)(millis() - historyRetryAt) >= 0) {
+    if (bootDone && (historyDue || benchmarkHistoryDue) && haveTime && historyTurn &&
+        (int32_t)(millis() - historyRetryAt) >= 0 && bigDownloadAllowed()) {
+      markBusy("price history");
       HistoryMsg hmsg{};
       int i = historyDue ? firstDue(historyDue) : -1;
       hmsg.index = (int8_t)i;
@@ -701,6 +753,7 @@ static void quoteTask(void*) {
     if (open && bootDone && priority < 0 && sectorPending && !sectorJustRan) {
       int k = firstSector(sectorPending);
       if (k == 0) sectorPassAt = millis() + cfg::SECTOR_REFRESH_S * 1000;   // a pass starts
+      markBusy("sector quote");
       fetchSector(k, sectorPending, true);
       sectorJustRan = true;
       continue;
@@ -934,7 +987,22 @@ static void seedBenchmarkFromSectors(uint32_t nowMs) {
   Serial.printf("quotes: %s seeded from the saved sector pass (%.2f)\n", b.symbol, q.price);
 }
 
+// Restarts the device if the task has been stuck in one step for too long (see markBusy).
+static void checkWatchdog() {
+  uint32_t since = busySinceMs;
+  if (since == 0) return;
+  uint32_t busyMs = millis() - since;   // millis() read after `since`, so this can't go negative
+  if (busyMs < cfg::QUOTE_WATCHDOG_S * 1000UL) return;
+  Serial.printf("watchdog: quote task stuck for %lu s in \"%s\" (free memory %u), restarting\n",
+                (unsigned long)(busyMs / 1000), busyStep, (unsigned)ESP.getFreeHeap());
+  storageSaveCharts();   // keep today's chart
+  healthNoteWatchdogRestart();
+  delay(100);            // let the log line go out
+  ESP.restart();
+}
+
 void quoteClientApply(uint32_t nowMs) {
+  if (queue != nullptr) checkWatchdog();
   seedBenchmarkFromSectors(nowMs);
   QuoteMsg msg;
   while (queue && xQueueReceive(queue, &msg, 0) == pdTRUE) {

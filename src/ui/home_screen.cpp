@@ -76,7 +76,6 @@ static void drawSparkline(int16_t x, int16_t y, const PriceSeries& series, uint1
   if (pad < 0.0001f) pad = 0.0001f;
   lo -= pad;
   hi += pad;
-  DFRobot_GDL& gfx = display();
   int16_t cols = n < (size_t)SPARK_W ? (int16_t)n : SPARK_W;
   int16_t prevX = 0, prevY = 0;
   for (int16_t k = 0; k < cols; k++) {
@@ -88,7 +87,7 @@ static void drawSparkline(int16_t x, int16_t y, const PriceSeries& series, uint1
     v /= (float)(to - from);
     int16_t px = x + (int16_t)((int32_t)k * (SPARK_W - 1) / (cols - 1));
     int16_t py = y + (SPARK_H - 1) - (int16_t)((v - lo) / (hi - lo) * (SPARK_H - 1) + 0.5f);
-    if (k > 0) gfx.drawLine(prevX, prevY, px, py, color);
+    if (k > 0) ui::spanLine(prevX, prevY, px, py, color);
     prevX = px;
     prevY = py;
   }

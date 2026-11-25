@@ -17,6 +17,11 @@ void displayPixelBytes(uint16_t color, uint8_t* out);
 // (from displayPixelBytes), row by row.
 void displayPushPixels(int16_t x, int16_t y, int16_t w, int16_t h, const uint8_t* pixels);
 
+// Protects the top `rows` pixel rows: drawing there is skipped until set back to 0. The
+// alert banner uses it so the screen underneath keeps running without painting over it.
+// (Fast path only; with cfg::DISPLAY_FAST_PATH off, nothing is protected.)
+void displaySetProtectedTop(int16_t rows);
+
 // Checks the touch panel and posts a Tap event when a finger first lands
 // (holding a finger down does not repeat the tap).
 void touchPoll(uint32_t nowMs);

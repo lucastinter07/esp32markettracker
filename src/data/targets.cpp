@@ -37,7 +37,7 @@ static TargetRecord& record(int i) {
 
 void targetsInit() {
   memset(records, 0, sizeof(records));
-  prefs.begin("targets", true);
+  prefs.begin("targets", false);   // read-write: creates the namespace on first boot (read-only logs an error)
   bool ok = prefs.getUChar("version", 0) == TARGETS_VERSION && prefs.getBytesLength("data") == sizeof(records) &&
             prefs.getBytes("data", records, sizeof(records)) == sizeof(records);
   prefs.end();

@@ -4,10 +4,11 @@
 #include "config.h"
 
 // Saved as one block of bytes. Version 2 added the cycle options at the end of the struct,
-// version 3 the sector map layout and overnight clock, version 4 the color theme; an older
+// version 3 the sector map layout and overnight clock, version 4 the color theme,
+// version 5 the transitions; an older
 // block is shorter and simply fills the fields it had. A future change that isn't "add
 // fields at the end" must bump the version and drop older blocks.
-static const uint8_t SETTINGS_VERSION = 4;
+static const uint8_t SETTINGS_VERSION = 5;
 
 static Settings current;
 static Preferences prefs;
@@ -63,5 +64,13 @@ const char* cycleSpeedName(uint8_t speed) {
     case CYCLE_FAST: return "FAST";
     case CYCLE_SLOW: return "SLOW";
     default:         return "NORMAL";
+  }
+}
+
+const char* transitionsName(uint8_t t) {
+  switch (t) {
+    case TRANSITIONS_RAPID:  return "RAPID";
+    case TRANSITIONS_SMOOTH: return "SMOOTH";
+    default:                 return "HYBRID";
   }
 }

@@ -6,6 +6,7 @@
 #include "config.h"
 #include "data/market_data.h"
 #include "data/settings.h"
+#include "hal/backlight.h"
 #include "hal/buzzer.h"
 #include "hal/display.h"
 #include "net/quote_client.h"
@@ -24,7 +25,7 @@
 #include "ui/setup_screen.h"
 
 static const uint32_t SETTINGS_IDLE_MS = 60000;   // Settings returns to Home after 60 s untouched
-static const uint32_t BANNER_MS = 10000;          // how long a price-alert banner stays up
+static const uint32_t BANNER_MS = 10000;          // how long a price-alert banner stays up (the screen keeps running)
 static const uint32_t CLOCK_IDLE_MS = 60000;      // overnight: back to the clock after 60 s untouched
 static const int CLOCK_GRACE_MIN = 15;            // the clock waits this long after a close
 
@@ -85,19 +86,22 @@ bool ScreenManager::clockWanted() const {
 }
 
 void ScreenManager::showClock(uint32_t nowMs) {
+  if (bannerShown_) dismissBanner(false);   // (alerts only come while the market is open)
   detail::resetCompare();
   mode_ = Mode::Clock;
   modeStartMs_ = nowMs;
+  bool faded = fadeOut();
   {
     PerfDraw t(PerfScreen::Clock, true);
     clockui::drawFull();
   }
+  fadeIn(faded);
   Serial.println("screen: overnight clock");
 }
 
 void ScreenManager::showSetup() {
   mode_ = Mode::Setup;
-  bannerShown_ = false;   // the setup screen replaces everything
+  if (bannerShown_) dismissBanner(false);   // the setup screen replaces everything
   {
     PerfDraw t(PerfScreen::Setup, true);
     wifisetup::drawFull();
@@ -109,10 +113,12 @@ void ScreenManager::showSettings(uint32_t nowMs, int row) {
   mode_ = Mode::Settings;
   modeStartMs_ = nowMs;
   settingsRow_ = row;
+  bool faded = fadeOut();
   {
     PerfDraw t(PerfScreen::Settings, true);
     settingsui::drawFull(settingsRow_);
   }
+  fadeIn(faded);
   Serial.println("screen: settings");
 }
 
@@ -120,10 +126,12 @@ void ScreenManager::showHome(uint32_t nowMs) {
   detail::resetCompare();   // leaving Detail: the next one opens on the normal chart
   mode_ = Mode::Home;
   modeStartMs_ = nowMs;
+  bool faded = fadeOut();
   {
     PerfDraw t(PerfScreen::Home, true);
     home::drawFull(highlight_);
   }
+  fadeIn(faded);
   Serial.println("screen: home");
 }
 
@@ -131,10 +139,12 @@ void ScreenManager::showDetail(int ticker, bool pinned, uint32_t nowMs) {
   mode_ = pinned ? Mode::PinnedDetail : Mode::AutoDetail;
   modeStartMs_ = nowMs;
   ticker_ = ticker;
+  bool faded = fadeOut();
   {
     PerfDraw t(PerfScreen::Detail, true);
     detail::drawFull(ticker, pinned, page_);
   }
+  fadeIn(faded);
   Serial.printf("screen: detail %d (%s)\n", ticker, pinned ? "pinned" : "auto");
 }
 
@@ -142,10 +152,12 @@ void ScreenManager::showSectors(bool pinned, uint32_t nowMs) {
   mode_ = Mode::Sectors;
   modeStartMs_ = nowMs;
   sectorsAuto_ = !pinned;
+  bool faded = fadeOut();
   {
     PerfDraw t(PerfScreen::Sectors, true);
     sectorsui::drawFull();
   }
+  fadeIn(faded);
   Serial.printf("screen: sectors (%s)\n", pinned ? "pinned" : "auto");
 }
 
@@ -171,22 +183,16 @@ void ScreenManager::update(uint32_t nowMs) {
     return;
   }
 
-  // Price alerts: the buzzer already sounded; show a banner on Home / Detail. (On other
-  // screens, e.g. Settings, the sound is the only notice.)
+  // Price alerts: the buzzer already sounded; show a banner on Home / Detail / Sectors.
+  // (On other screens, e.g. Settings, the sound is the only notice.) Like a phone
+  // notification, the screen underneath keeps running and the auto cycle keeps going:
+  // the display just doesn't draw under the banner until it goes away.
   AlertEvent alert;
   if (alertsTake(alert) &&
       (mode_ == Mode::Home || mode_ == Mode::AutoDetail || mode_ == Mode::PinnedDetail || mode_ == Mode::Sectors)) {
     showBanner(alert, nowMs);
   }
-  uint32_t loopGap = nowMs - lastUpdateMs_;
-  lastUpdateMs_ = nowMs;
-  if (bannerShown_) {
-    // The screen underneath is paused (no redraws that would paint over the banner), and
-    // so is its timer, so the auto cycle picks up where it left off.
-    modeStartMs_ += loopGap;
-    if ((int32_t)(nowMs - bannerUntilMs_) >= 0) dismissBanner(nowMs);
-    return;
-  }
+  if (bannerShown_ && (int32_t)(nowMs - bannerUntilMs_) >= 0) dismissBanner(true);
 
   // Overnight clock: replaces the normal screens a minute after the last input, and hands
   // back to Home when the market opens (or the setting is turned off).
@@ -223,11 +229,7 @@ void ScreenManager::update(uint32_t nowMs) {
         else showHome(nowMs);
       } else {
         // Halfway through, turn to the stats page.
-        if (page_ != detail::Page::Stats && elapsed >= detailMs / 2) {
-          page_ = detail::Page::Stats;
-          PerfDraw t(PerfScreen::DetailPage, true);
-          detail::setPage(ticker_, page_);
-        }
+        if (page_ != detail::Page::Stats && elapsed >= detailMs / 2) setDetailPage(detail::Page::Stats);
         PerfDraw t(PerfScreen::Detail, false);
         detail::update(ticker_);
         detail::drawCountdown(1.0f - (float)elapsed / detailMs);
@@ -293,7 +295,9 @@ void ScreenManager::handleInput(const InputEvent& ev, uint32_t nowMs) {
   buzzerClick();
   {
     PerfDraw t(PerfScreen::Input, true);
+    inputSwitch_ = true;   // screen changes from here on are "from touch / a button"
     handleInputAction(ev, nowMs);
+    inputSwitch_ = false;
   }
   // Drawn after the action so a screen change doesn't wipe it straight away.
   if (cfg::TOUCH_DEBUG && ev.type == InputType::Tap) drawTouchMarker(ev.x, ev.y);
@@ -317,10 +321,12 @@ void ScreenManager::handleInputAction(const InputEvent& ev, uint32_t nowMs) {
   }
 
   if (bannerShown_) {
-    // Tapping the banner (or SELECT) opens the stock it's about; anything else just
-    // removes the banner and then does what it normally does.
+    // The banner's X (or BACK) only clears it. Tapping the rest of the banner (or SELECT)
+    // opens the stock it's about. Anything else clears it and then does what it normally does.
+    bool clear = ev.type == InputType::Back || (ev.type == InputType::Tap && banner::isCloseTap(ev.x, ev.y));
     bool open = ev.type == InputType::Select || (ev.type == InputType::Tap && banner::isTap(ev.x, ev.y));
-    dismissBanner(nowMs);
+    dismissBanner(!open);   // opening the stock redraws everything anyway
+    if (clear) return;
     if (open) {
       highlight_ = bannerStock_;
       page_ = detail::Page::Day;
@@ -417,16 +423,12 @@ void ScreenManager::handleInputAction(const InputEvent& ev, uint32_t nowMs) {
     // Turned on from the stats page, it opens the 1D chart so the change shows.
     bool on = !detail::compareOn();
     detail::setCompare(ticker_, on);
-    if (on && page_ == detail::Page::Stats) {
-      page_ = detail::Page::Day;
-      detail::setPage(ticker_, page_);
-    }
+    if (on && page_ == detail::Page::Stats) setDetailPage(detail::Page::Day);
     pinIfAuto();
   } else if (tab >= 0 || ev.type == InputType::Select) {
     // A button picks its page; SELECT steps to the next one (1H > 1D > 5D > 1M > STATS > 1H).
-    if (tab >= 0) page_ = (detail::Page)tab;
-    else page_ = (detail::Page)(((int)page_ + 1) % detail::PAGE_COUNT);
-    detail::setPage(ticker_, page_);
+    if (tab >= 0) setDetailPage((detail::Page)tab);
+    else setDetailPage((detail::Page)(((int)page_ + 1) % detail::PAGE_COUNT));
     pinIfAuto();
   } else {
     pinIfAuto();   // any other touch while auto-showing: the user is looking, so pin it
@@ -496,14 +498,42 @@ void ScreenManager::showBanner(const AlertEvent& alert, uint32_t nowMs) {
   bannerStock_ = alert.stockIndex;
   bannerUntilMs_ = nowMs + BANNER_MS;
   PerfDraw t(PerfScreen::Banner, true);
+  displaySetProtectedTop(0);
   banner::draw(alert);
+  displaySetProtectedTop(banner::HEIGHT);   // the screen underneath can't paint over it
 }
 
-void ScreenManager::dismissBanner(uint32_t nowMs) {
-  (void)nowMs;
+// redraw = repaint the current screen, so the part the banner covered comes back.
+void ScreenManager::dismissBanner(bool redraw) {
   if (!bannerShown_) return;
   bannerShown_ = false;
-  redrawCurrent();
+  displaySetProtectedTop(0);
+  if (redraw) {
+    PerfDraw t(PerfScreen::Banner, true);
+    redrawCurrent();
+  }
+}
+
+// Settings > Transitions: RAPID never fades, SMOOTH always, HYBRID only on auto-cycle changes.
+bool ScreenManager::fadeOut() {
+  uint8_t t = settings().transitions;
+  bool fade = t == TRANSITIONS_SMOOTH || (t == TRANSITIONS_HYBRID && !inputSwitch_);
+  if (fade) backlightFadeOut(cfg::FADE_MS);
+  return fade;
+}
+
+void ScreenManager::fadeIn(bool faded) {
+  if (faded) backlightFadeIn(cfg::FADE_MS);
+}
+
+void ScreenManager::setDetailPage(detail::Page page) {
+  page_ = page;
+  bool faded = fadeOut();
+  {
+    PerfDraw t(PerfScreen::DetailPage, true);
+    detail::setPage(ticker_, page_);
+  }
+  fadeIn(faded);
 }
 
 // Repaints the current Home / Detail screen (after the banner covered part of it).

@@ -1,6 +1,8 @@
 #include "app/health.h"
 #include <Arduino.h>
 #include <WiFi.h>
+#include <esp_attr.h>
+#include <esp_flash.h>
 #include <esp_system.h>
 #include "config.h"
 #include "net/quote_client.h"
@@ -9,10 +11,23 @@
 
 // Why the chip last started. Anything other than power-on / reset button / upload points
 // at a crash (panic, watchdog) or a power dip (brownout): worth knowing after a long run.
+// Survives a software restart (not a power cut): set just before the quote watchdog restarts.
+RTC_NOINIT_ATTR static uint32_t restartNote;
+static const uint32_t NOTE_QUOTE_WATCHDOG = 0x51574454;
+
+void healthNoteWatchdogRestart() {
+  restartNote = NOTE_QUOTE_WATCHDOG;
+}
+
 const char* healthResetReason() {
+  static int8_t byWatchdog = -1;   // read the note once, then clear it for the next restart
+  if (byWatchdog < 0) {
+    byWatchdog = restartNote == NOTE_QUOTE_WATCHDOG ? 1 : 0;
+    restartNote = 0;
+  }
   switch (esp_reset_reason()) {
     case ESP_RST_POWERON:  return "power on";
-    case ESP_RST_SW:       return "software restart";
+    case ESP_RST_SW:       return byWatchdog ? "RESTART (quote task stuck)" : "software restart";
     case ESP_RST_PANIC:    return "CRASH (panic)";
     case ESP_RST_INT_WDT:
     case ESP_RST_TASK_WDT:
@@ -20,6 +35,20 @@ const char* healthResetReason() {
     case ESP_RST_BROWNOUT: return "POWER DIP (brownout)";
     default:               return "other (e.g. upload)";
   }
+}
+
+// The flash chip's real size (from its ID, not from the build settings): 8 MB = N8R8,
+// 16 MB = N16R8. The firmware is built for 8 MB, which works on both.
+void healthLogBoard() {
+  uint32_t id = 0;
+  uint32_t flashMb = 0;
+  if (esp_flash_read_id(nullptr, &id) == ESP_OK && (id & 0xFF) >= 20 && (id & 0xFF) <= 26) {
+    flashMb = (1UL << (id & 0xFF)) / (1024UL * 1024UL);
+  }
+  uint32_t psramMb = ESP.getPsramSize() / (1024UL * 1024UL);
+  Serial.printf("board: flash chip %lu MB (build uses %lu MB), PSRAM %lu MB%s\n", (unsigned long)flashMb,
+                (unsigned long)(ESP.getFlashChipSize() / (1024UL * 1024UL)), (unsigned long)psramMb,
+                psramMb ? "" : " (not found)");
 }
 
 void healthMemory(MemoryInfo& out) {

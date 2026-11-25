@@ -7,6 +7,9 @@ enum CycleSpeed : uint8_t { CYCLE_FAST = 0, CYCLE_NORMAL = 1, CYCLE_SLOW = 2 };
 // Sector heat map layout: SIZED = tiles sized by S&P 500 weight, fixed positions;
 // GRID = equal tiles sorted by today's change.
 enum SectorMap : uint8_t { SECTOR_MAP_SIZED = 0, SECTOR_MAP_GRID = 1 };
+// How screens change: RAPID = at once; SMOOTH = every change fades (backlight down, draw,
+// backlight up); HYBRID = changes from touch / buttons are instant, auto-cycle changes fade.
+enum Transitions : uint8_t { TRANSITIONS_RAPID = 0, TRANSITIONS_HYBRID = 1, TRANSITIONS_SMOOTH = 2 };
 
 // New fields go at the END, so a block saved by older firmware still lines up with the
 // fields it had (the new ones keep their defaults).
@@ -23,6 +26,7 @@ struct Settings {
   uint8_t sectorMap = SECTOR_MAP_SIZED;   // (Phase 8A)
   bool overnightClock = true;  // clock screen instead of the cycle while the market is closed (8D)
   uint8_t theme = 0;           // color theme, index into ui::palette() (Phase 9); 0 = Graphite
+  uint8_t transitions = TRANSITIONS_HYBRID;   // (after the soak, settings v5)
 };
 
 void settingsInit();               // loads saved settings (or the defaults above)
@@ -34,3 +38,4 @@ void settingsSave();
 uint32_t cycleHomeMs();
 uint32_t cycleDetailMs();
 const char* cycleSpeedName(uint8_t speed);   // "FAST", "NORMAL", "SLOW"
+const char* transitionsName(uint8_t t);      // "RAPID", "HYBRID", "SMOOTH"

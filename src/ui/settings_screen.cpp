@@ -15,16 +15,16 @@ using ui::Align;
 static const int ROWS_PER_PAGE = 8;
 static const int16_t RULE_Y = 284, PAGER_Y = 296;
 
-// Page 1 = what the screen shows, page 2 = alerts, sound and system.
+// Page 1 = what the screen shows, page 2 = night dimming, alerts, sound and system.
 enum Row {
   // page 1
-  WATCHLIST, AUTO_CYCLE, CYCLE_SPEED, SECTOR_MAP, OVERNIGHT_CLOCK, THEME, BRIGHTNESS, NIGHT_DIM,
+  WATCHLIST, AUTO_CYCLE, CYCLE_SPEED, TRANSITIONS, SECTOR_MAP, OVERNIGHT_CLOCK, THEME, BRIGHTNESS,
   // page 2
-  ALERTS, CLICKS, CHIME, WIFI, DIAGNOSTICS, REFRESH, RESTART,
+  NIGHT_DIM, ALERTS, CLICKS, CHIME, WIFI, DIAGNOSTICS, REFRESH, RESTART,
   ROW_COUNT
 };
 static const char* const LABELS[ROW_COUNT] = {
-    "WATCHLIST",    "AUTO CYCLE",   "CYCLE SPEED", "SECTOR MAP", "OVERNIGHT CLOCK", "THEME",
+    "WATCHLIST",    "AUTO CYCLE",   "CYCLE SPEED", "TRANSITIONS", "SECTOR MAP", "OVERNIGHT CLOCK", "THEME",
     "BRIGHTNESS",   "NIGHT DIMMING", "PRICE ALERTS", "CLICK SOUNDS", "CHIME",       "WI-FI",
     "DIAGNOSTICS",  "RE-DOWNLOAD DATA", "RESTART",
 };
@@ -71,6 +71,7 @@ static void valueText(int row, char* buf, size_t size) {
     case WATCHLIST:   snprintf(buf, size, "EDIT >"); break;
     case AUTO_CYCLE:  snprintf(buf, size, st.autoCycle ? "ON" : "OFF"); break;
     case CYCLE_SPEED: snprintf(buf, size, "%s", cycleSpeedName(st.cycleSpeed)); break;
+    case TRANSITIONS: snprintf(buf, size, "%s", transitionsName(st.transitions)); break;
     case SECTOR_MAP:  snprintf(buf, size, st.sectorMap == SECTOR_MAP_GRID ? "GRID" : "SIZED"); break;
     case OVERNIGHT_CLOCK: snprintf(buf, size, st.overnightClock ? "ON" : "OFF"); break;
     case THEME:       snprintf(buf, size, "%s", ui::palette(st.theme).name); break;
@@ -200,6 +201,7 @@ Action activate(int row, uint32_t nowMs) {
     case RESTART:     return confirmed(row) ? Action::Restart : Action::None;
     case AUTO_CYCLE:  st.autoCycle = !st.autoCycle; break;
     case CYCLE_SPEED: st.cycleSpeed = (st.cycleSpeed + 1) % 3; break;
+    case TRANSITIONS: st.transitions = (st.transitions + 1) % 3; break;
     case CLICKS:      st.clickSounds = !st.clickSounds; break;
     case CHIME:       st.chime = !st.chime; break;
     case SECTOR_MAP:  st.sectorMap = st.sectorMap == SECTOR_MAP_GRID ? SECTOR_MAP_SIZED : SECTOR_MAP_GRID; break;
