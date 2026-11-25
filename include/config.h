@@ -68,6 +68,7 @@ constexpr uint8_t BUZZER_PIN = 18;
 
 // ---- Screen cycle ----
 constexpr uint32_t HOME_DURATION_MS   = 30000;
+constexpr uint32_t DETAIL_DURATION_MS = 20000;   // auto mode: chart page, then stats page halfway
 constexpr uint32_t SPLASH_MIN_MS      = 2500;    // startup screen shows at least this long
 constexpr uint32_t SPLASH_MAX_MS      = 200000;  // safety limit: it normally leaves once every price is in
                                                  // (a tap or button skips it any time)
@@ -84,7 +85,6 @@ constexpr uint32_t LOOP_WATCHDOG_S = 15;
 // wait while the largest free block of memory is below this (one HTTPS connection needs
 // ~40 KB), and are retried 5 minutes later.
 constexpr uint32_t DOWNLOAD_MIN_BLOCK = 45000;
-constexpr uint32_t DETAIL_DURATION_MS = 20000;   // auto mode: chart page, then stats page halfway
 
 // ---- Watchlist ----
 // These are the defaults: the first boot (and "Reset to defaults") uses them. Changes made
